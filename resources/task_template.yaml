@@ -240,7 +240,7 @@ ground_truth:
     valence: negative
     order: 50
 transcription:
-  whisper_model: large-v3
+  whisper_model: small
   language: en
   device: cpu
   compute_type: float32
