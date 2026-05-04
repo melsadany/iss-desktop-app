@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <title>Iowa Speech Sample</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+  <script>
+    // Apply saved theme before paint to avoid a flash
+    (function() {
+      try {
+        var t = localStorage.getItem('iss-theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">ISS</div>
+        <div class="brand-title">Iowa Speech Sample</div>
+        <div class="brand-sub">Desktop · v1.0</div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="setup">Setup</button>
+        <button class="nav-item" data-view="participants">Participants</button>
+        <button class="nav-item" data-view="record">Record</button>
+        <button class="nav-item" data-view="run">Run pipeline</button>
+        <button class="nav-item" data-view="results">Results</button>
+      </nav>
+      <div class="sidebar-foot">
+        <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
+          <span class="toggle-icon" id="theme-icon">☾</span>
+          <span class="toggle-label" id="theme-label">Dark</span>
+        </button>
+        <button id="open-data-folder" class="link-btn">Open data folder</button>
+        <a class="link-btn" href="#" data-href="https://github.com/melsadany/iss-pipeline">GitHub repo</a>
+      </div>
+    </aside>
+
+    <main class="content">
+      <!-- SETUP -->
+      <section id="view-setup" class="view active">
+        <h1>Setup</h1>
+        <p class="lead">First-time setup checks Docker, downloads the reference data, and pulls the analysis image.</p>
+
+        <div class="cards">
+          <div class="card" id="card-docker">
+            <div class="card-head">
+              <h3>Docker</h3>
+              <span class="status pending" id="docker-status">checking…</span>
+            </div>
+            <p>The pipeline runs inside the <code>melsadany/iowa_speech_sample</code> container.
+               Please install <a href="#" data-href="https://www.docker.com/products/docker-desktop/">Docker Desktop</a>
+               and make sure it's running.</p>
+            <div class="card-actions">
+              <button id="btn-recheck">Re-check</button>
+            </div>
+          </div>
+
+          <div class="card" id="card-image">
+            <div class="card-head">
+              <h3>Analysis image</h3>
+              <span class="status pending" id="image-status">—</span>
+            </div>
+            <p>Pull <code>melsadany/iowa_speech_sample:v1.0</code> (≈ several GB; one-time).</p>
+            <div class="card-actions">
+              <button id="btn-pull">Pull image</button>
+            </div>
+            <pre class="log" id="pull-log" hidden></pre>
+          </div>
+
+          <div class="card" id="card-refdata">
+            <div class="card-head">
+              <h3>Reference data</h3>
+              <span class="status pending" id="ref-status">—</span>
+            </div>
+            <p>Download embeddings, archetypes, linguistic norms, and task metadata
+               from <a href="#" data-href="https://zenodo.org/records/18675411">Zenodo</a>.</p>
+            <div class="card-actions">
+              <button id="btn-refdata">Download reference data</button>
+            </div>
+            <progress id="ref-progress" value="0" max="100" hidden></progress>
+            <pre class="log" id="ref-log" hidden></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- PARTICIPANTS -->
+      <section id="view-participants" class="view">
+        <h1>Participants</h1>
+        <div class="row">
+          <div class="card">
+            <h3>New participant</h3>
+            <label>Participant ID
+              <input id="np-id" placeholder="e.g. SUBJ001" />
+            </label>
+            <label>Label (optional)
+              <input id="np-label" placeholder="Display name" />
+            </label>
+            <label>Notes
+              <textarea id="np-notes" rows="3" placeholder="Anything to remember"></textarea>
+            </label>
+            <button id="np-create" class="primary">Create participant</button>
+            <span id="np-msg" class="muted"></span>
+          </div>
+
+          <div class="card grow">
+            <h3>All participants</h3>
+            <table class="table" id="participants-table">
+              <thead>
+                <tr><th>ID</th><th>Label</th><th>Created</th><th>Sessions</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- RECORD -->
+      <section id="view-record" class="view">
+        <h1>Record session</h1>
+        <div class="row">
+          <div class="card">
+            <h3>Session info</h3>
+            <label>Participant
+              <select id="rec-participant"></select>
+            </label>
+            <label>Recording format
+              <select id="rec-format">
+                <option value="mp3" selected>MP3 (recommended)</option>
+                <option value="wav">WAV</option>
+                <option value="default">Browser default (webm)</option>
+              </select>
+            </label>
+            <div class="actions">
+              <button id="rec-mic">Enable microphone</button>
+              <button id="rec-start" disabled>Start task</button>
+              <button id="rec-stop"  disabled>Stop early</button>
+            </div>
+            <p id="rec-status" class="muted">Pick a participant to begin.</p>
+          </div>
+
+          <div class="card grow">
+            <h3>Task video</h3>
+            <video id="rec-video" controls playsinline></video>
+            <p class="hint">The task video is bundled with the app. It will play in fullscreen when you press
+               Start task. Recording stops automatically when the video ends.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- RUN -->
+      <section id="view-run" class="view">
+        <h1>Run analysis pipeline</h1>
+        <div class="row">
+          <div class="card">
+            <h3>Choose a session</h3>
+            <label>Participant
+              <select id="run-participant"></select>
+            </label>
+            <label>Session
+              <select id="run-session"></select>
+            </label>
+            <div class="actions">
+              <button id="run-start" class="primary">Run pipeline</button>
+              <button id="run-cancel" disabled>Cancel</button>
+            </div>
+            <p id="run-status" class="muted"></p>
+          </div>
+
+          <div class="card grow">
+            <h3>Live log</h3>
+            <pre class="log tall" id="run-log"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- RESULTS -->
+      <section id="view-results" class="view">
+        <h1>Results</h1>
+        <div class="row">
+          <div class="card">
+            <h3>Participant</h3>
+            <label>Participant
+              <select id="res-participant"></select>
+            </label>
+            <button id="res-refresh">Refresh</button>
+            <button id="res-open-folder">Open output folder</button>
+            <ul id="res-files" class="filelist"></ul>
+          </div>
+          <div class="card grow">
+            <h3 id="res-title">CSV viewer</h3>
+            <div class="table-wrap">
+              <table class="table" id="res-table"><thead></thead><tbody></tbody></table>
+            </div>
+            <p class="muted" id="res-truncated"></p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="vendor/lame.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

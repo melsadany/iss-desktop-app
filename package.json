@@ -1,0 +1,66 @@
+{
+  "name": "iss-desktop",
+  "productName": "Iowa Speech Sample",
+  "version": "1.0.0",
+  "description": "Desktop app for the Iowa Speech Sample (ISS) — record the task and run the analysis pipeline locally via Docker.",
+  "author": {
+    "name": "Mohammed Elsadany",
+    "email": "melsadany24@gmail.com"
+  },
+  "license": "MIT",
+  "main": "src/main/main.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --inspect",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "lamejs": "^1.2.1"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "edu.uiowa.iss-desktop",
+    "productName": "Iowa Speech Sample",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "."
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "category": "Education",
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb",      "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png",
+      "maintainer": "Mohammed Elsadany <melsadany24@gmail.com>"
+    }
+  }
+}
