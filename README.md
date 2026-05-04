@@ -2,30 +2,30 @@
 
 A native desktop app (Electron) that wraps the **Iowa Speech Sample (ISS) v1.10.B** workflow:
 
-1. **Record** the ISS task (plays the task video fullscreen, captures the participant's audio).
-2. **Run** the analysis pipeline locally via the `melsadany/iowa_speech_sample:v1.0` Docker image.
-3. **View** per-participant CSV outputs and open the data folder.
+1. **Record** the ISS task by playing the bundled task video fullscreen and capturing the participant's audio.
+2. **Run** the analysis pipeline locally via the `melsadany/iowa_speech_sample:latest` Docker image.
+3. **View** per-participant outputs, including tabular files in-app and non-tabular files via the data folder.
 
-It reuses the official Docker image so feature extraction is bit-for-bit identical to the CLI pipeline.
+It reuses the official Docker image, so feature extraction matches the CLI pipeline while giving you a simple desktop workflow for setup, recording, execution, and review.
 
 ---
 
 ## Requirements
 
-- macOS 11+ or Linux (Ubuntu 20.04+ / Debian 11+) — Apple Silicon and x64 supported on macOS.
+- macOS 11+ or Linux (Ubuntu 20.04+ / Debian 11+); Apple Silicon and x64 are supported on macOS.
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
-- ~30 GB free disk for the Docker image + reference data.
-- 8 GB RAM minimum (16 GB recommended for WhisperX large-v3).
+- ~30 GB free disk for the Docker image and reference data.
+- 8 GB RAM minimum, 16 GB recommended for WhisperX large-v3.
 
-The app does **not** download Docker for you — the **Setup** screen shows a status check and links you to the installer if it's missing.
+The app does **not** install Docker for you. The **Setup** tab checks Docker status, shows whether the analysis image is present, and links to Docker Desktop if needed.
 
 ---
 
 ## Run from source
 
 ```bash
-git clone <this repo>
-cd iss-desktop
+git clone https://github.com/melsadany/iss-desktop-app.git
+cd iss-desktop-app
 npm install
 npm start
 ```
@@ -34,58 +34,65 @@ npm start
 
 ```bash
 npm install
-npm run dist:mac     # → dist/Iowa Speech Sample-1.0.0.dmg
-npm run dist:linux   # → dist/Iowa Speech Sample-1.0.0.AppImage  +  .deb
+npm run dist:mac     # -> dist/Iowa Speech Sample-1.0.0.dmg
+npm run dist:linux   # -> dist/Iowa Speech Sample-1.0.0.AppImage and .deb
 ```
 
-Outputs land in `dist/`. macOS builds are unsigned by default — for distribution
-add Apple Developer credentials and re-run with `electron-builder --mac --publish=never`.
+Build outputs land in `dist/`. macOS builds are unsigned by default; for distribution, add Apple Developer credentials and rebuild with `electron-builder --mac --publish=never`.
 
 ## What the app does
 
-| Tab            | What it does                                                                 |
-|----------------|------------------------------------------------------------------------------|
-| **Setup**      | Detects Docker, pulls the ISS image, downloads reference data from Zenodo.   |
-| **Participants** | Create / list / remove participants. Each gets a folder under `userData/participants/<id>`. |
-| **Record**     | Plays the bundled `task_video.mp4` fullscreen, records mic audio, saves MP3/WAV/WebM into the participant's `input/`. |
-| **Run pipeline** | Spawns `docker run melsadany/iowa_speech_sample:v1.0 <id> /input/<file>` and streams logs live. |
-| **Results**    | Lists CSV files in `output/features/` and renders the selected one in a table viewer. |
+| Tab | What it does |
+|---|---|
+| **Setup** | Detects Docker, pulls the ISS image, performs a non-blocking startup freshness check, and downloads reference data from Zenodo. |
+| **Participants** | Create, list, and remove participants. Each participant gets a folder under `userData/participants/<id>`. |
+| **Record** | Plays the bundled `task_video.mp4` fullscreen, records microphone audio, and saves MP3, WAV, or browser-default audio into the participant's `input/` folder. |
+| **Run pipeline** | Spawns `docker run` against `melsadany/iowa_speech_sample:latest`, mounts participant input/output folders, mounts the editable config, and streams logs live in the app. |
+| **Results** | Lists supported files in `output/features/`; displays `.csv` and `.tsv` files in a table viewer, and provides open-in-folder handling for `.rds`, `.json`, and `.txt`. |
 
-### Where data lives
+## Current behavior
 
-| Location                                      | Contents                                                |
-|-----------------------------------------------|---------------------------------------------------------|
-| `userData/participants/<id>/input/`           | Recorded audio files (`<id>_<timestamp>.mp3`).          |
-| `userData/participants/<id>/output/features/` | Pipeline outputs (per-prompt, per-task, per-participant CSVs). |
-| `userData/reference_data/`                    | Zenodo reference data (embeddings, archetypes, norms).  |
-| `userData/config/task_template.yaml`          | Editable copy of the pipeline config.                   |
-| `userData/iss_db.json`                        | Index of participants + sessions.                       |
+- The app defaults to a **light theme** and includes a theme toggle with saved preference.
+- On launch, it performs a background `docker pull` freshness check without blocking the UI.
+- When reference data is downloaded from Zenodo, the app automatically handles the common nested extraction layout where files end up under `reference_data/reference_data/`.
+- The Results panel supports both tabular preview and file-type-specific guidance for non-tabular outputs.
+
+## Where data lives
+
+| Location | Contents |
+|---|---|
+| `userData/participants/<id>/input/` | Recorded or discovered audio files such as `<id>_<timestamp>.mp3`, plus other supported audio formats. |
+| `userData/participants/<id>/output/features/` | Pipeline outputs including CSV, TSV, RDS, JSON, and TXT files. |
+| `userData/reference_data/` | Zenodo reference data, including embeddings, archetypes, norms, and task metadata. |
+| `userData/config/task_template.yaml` | Editable copy of the pipeline config. |
+| `userData/iss_db.json` | Local index of participants and recorded sessions. |
 
 `userData` resolves to:
 - macOS — `~/Library/Application Support/Iowa Speech Sample/`
 - Linux — `~/.config/Iowa Speech Sample/`
 
-Use **File → Open data folder** (or the sidebar shortcut) to jump there.
+Use **File -> Open data folder** or the sidebar shortcut to jump there.
 
 ## Architecture
 
-```
+```text
 src/
 ├── main/
 │   ├── main.js        # Electron main: IPC, Docker, downloads, file I/O
-│   └── preload.js     # contextBridge — exposes `window.iss.*`
+│   └── preload.js     # contextBridge exposing window.iss.*
 └── renderer/
     ├── index.html     # 5-tab UI
     ├── styles.css
-    ├── renderer.js    # All UI logic + WebAudio/MediaRecorder + lamejs encoder
+    ├── renderer.js    # UI logic, WebAudio/MediaRecorder, result preview
     ├── vendor/lame.min.js
-    └── assets/task_video.mp4
+    └── assets/
+        ├── task_video.mp4
+        └── logo.png
 resources/
 └── task_template.yaml # default config copied to userData on first launch
 ```
 
-The renderer never touches Node — all privileged work (spawn, fs, https) is done in `main.js`
-behind the `iss` IPC bridge defined in `preload.js`.
+The renderer does not access Node APIs directly. Privileged work such as `spawn`, file I/O, and HTTPS downloads is handled in `main.js` through the `window.iss` bridge exposed by `preload.js`.
 
 ## Reference
 
@@ -96,4 +103,3 @@ behind the `iss` IPC bridge defined in `preload.js`.
 ## License
 
 MIT.
-# iss-desktop-app
