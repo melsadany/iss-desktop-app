@@ -446,7 +446,7 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId }) => {
 
   const dockerArgs = [
     'run', '--rm',
-    '--memory=48g',
+    '--memory=48g', '-e R_MAX_SIZE=48GB',
     '-v', `${inputDir}:/input`,
     '-v', `${outputDir}:/app/output`
   ];
