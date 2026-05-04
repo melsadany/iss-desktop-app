@@ -1,0 +1,373 @@
+# Task configuration for ISS.v1.10B assessment
+task_name: ISS
+task_version: 1.10_B
+audio_format: mp3
+sample_rate: 44100
+bit_rate: 16
+template_csv: /app/reference_data/task_metadata/ISS_v_1.10_B_task_metadata.csv
+word_association_prompts:
+- prompt: begins with the letter S
+  type: letter
+  subtype: 1
+  constraint_letter: S
+- prompt: begins with the letter C
+  type: letter
+  subtype: 2
+  constraint_letter: C
+- prompt: animals
+  type: lexical
+  subtype: 1
+- prompt: names of cities or towns
+  type: lexical
+  subtype: 2
+- prompt: three letter words
+  type: morph
+  subtype: 1
+  constraint_length: 3
+- prompt: two syllable words
+  type: morph
+  subtype: 2
+  constraint_syllables: 2
+- prompt: lying on the beach
+  type: abstract
+  subtype: 1
+- prompt: with a friend
+  type: abstract
+  subtype: 2
+- prompt: begins with the letter F
+  type: letter
+  subtype: 1
+  constraint_letter: F
+- prompt: begins with the letter A
+  type: letter
+  subtype: 2
+  constraint_letter: A
+- prompt: fits in a shoebox
+  type: abstract
+  subtype: 1
+- prompt: things you might step on
+  type: abstract
+  subtype: 2
+- prompt: rhymes with dress
+  type: sound
+  subtype: 1
+  constraint_rhyme: dress
+- prompt: rhymes with rain
+  type: sound
+  subtype: 2
+  constraint_rhyme: rain
+- prompt: about to perform on stage
+  type: abstract
+  subtype: 1
+- prompt: waking up
+  type: abstract
+  subtype: 2
+- prompt: begins with the letter L
+  type: letter
+  subtype: 1
+  constraint_letter: L
+- prompt: begins with the letter P
+  type: letter
+  subtype: 2
+  constraint_letter: P
+ground_truth:
+  sent_rep_sentences:
+  - difficulty: easy
+    sentence: didn't the girl paint the picture
+    start_sec: 375.8
+    response_window_start: 377.81
+    response_window_end: 382.4
+  - difficulty: medium
+    sentence: the woman who helped serve the hot lunches is the new nurse
+    start_sec: 382.4
+    response_window_start: 386.29
+    response_window_end: 395.2
+  - difficulty: hard
+    sentence: the cafeteria doors around which the seventh graders sometimes stand until the lunch bell rings are always
+      closed but never locked
+    start_sec: 395.2
+    response_window_start: 403.25
+    response_window_end: 417.6
+  reading_words:
+  - word: breathtaking
+    valence: positive
+    order: 1
+  - word: triumph
+    valence: positive
+    order: 2
+  - word: masterpiece
+    valence: positive
+    order: 3
+  - word: exuberant
+    valence: positive
+    order: 4
+  - word: rejoice
+    valence: positive
+    order: 5
+  - word: miracle
+    valence: positive
+    order: 6
+  - word: pleasure
+    valence: positive
+    order: 7
+  - word: admire
+    valence: positive
+    order: 8
+  - word: joyous
+    valence: positive
+    order: 9
+  - word: calm
+    valence: positive
+    order: 10
+  - word: outrage
+    valence: negative
+    order: 11
+  - word: abused
+    valence: negative
+    order: 12
+  - word: bother
+    valence: negative
+    order: 13
+  - word: embarrass
+    valence: negative
+    order: 14
+  - word: ugly
+    valence: negative
+    order: 15
+  - word: failing
+    valence: negative
+    order: 16
+  - word: trouble
+    valence: negative
+    order: 17
+  - word: neglect
+    valence: negative
+    order: 18
+  - word: uptight
+    valence: negative
+    order: 19
+  - word: worry
+    valence: negative
+    order: 20
+  - word: not
+    valence: neutral
+    order: 21
+  - word: trap
+    valence: neutral
+    order: 22
+  - word: saw
+    valence: neutral
+    order: 23
+  - word: stared
+    valence: neutral
+    order: 24
+  - word: emit
+    valence: neutral
+    order: 25
+  - word: edit
+    valence: neutral
+    order: 26
+  - word: tarp
+    valence: neutral
+    order: 27
+  - word: raw
+    valence: neutral
+    order: 28
+  - word: flow
+    valence: neutral
+    order: 29
+  - word: tide
+    valence: neutral
+    order: 30
+  - word: reward
+    valence: positive
+    order: 31
+  - word: help
+    valence: positive
+    order: 32
+  - word: fondness
+    valence: positive
+    order: 33
+  - word: rescued
+    valence: positive
+    order: 34
+  - word: optimistic
+    valence: positive
+    order: 35
+  - word: noble
+    valence: positive
+    order: 36
+  - word: beautiful
+    valence: positive
+    order: 37
+  - word: inspiring
+    valence: positive
+    order: 38
+  - word: improve
+    valence: positive
+    order: 39
+  - word: supportive
+    valence: positive
+    order: 40
+  - word: protest
+    valence: negative
+    order: 41
+  - word: terror
+    valence: negative
+    order: 42
+  - word: restrict
+    valence: negative
+    order: 43
+  - word: bore
+    valence: negative
+    order: 44
+  - word: ban
+    valence: negative
+    order: 45
+  - word: disgraced
+    valence: negative
+    order: 46
+  - word: alarmed
+    valence: negative
+    order: 47
+  - word: enraged
+    valence: negative
+    order: 48
+  - word: chaos
+    valence: negative
+    order: 49
+  - word: block
+    valence: negative
+    order: 50
+transcription:
+  whisper_model: large-v3
+  language: en
+  device: cpu
+  compute_type: float32
+  confidence_threshold:
+    strict: 0.9
+    review: 0.8
+    auto: 0.0
+  filters:
+    remove_fillers:
+    - uh
+    - um
+    - umm
+    - oh
+    - eh
+    - hmm
+    - hmmm
+    - mmm
+    remove_acknowledgments: []
+    remove_punctuation: true
+task_settings:
+  ORIENTATION:
+    transcribe: true
+    extract_acoustic: false
+    extract_semantic: false
+  CHECKBOX:
+    transcribe: true
+    extract_acoustic: false
+    extract_semantic: false
+    expected_responses: 5
+    valid_words:
+    - check
+    - checked
+  HI:
+    transcribe: true
+    extract_acoustic: false
+    extract_semantic: false
+    expected_responses: 5
+    valid_words:
+    - hi
+    - hello
+    - hey
+  WORD_ASSOC:
+    transcribe: true
+    extract_acoustic: true
+    extract_semantic: true
+    response_window_sec: 15
+    constraint_checking: true
+  WMEMORY:
+    transcribe: true
+    extract_acoustic: false
+    extract_semantic: false
+    check_recall_accuracy: true
+  SENT_REP:
+    transcribe: true
+    extract_acoustic: true
+    extract_semantic: false
+    calculate_accuracy: true
+    calculate_bigram_accuracy: true
+  READING:
+    transcribe: true
+    extract_acoustic: true
+    extract_semantic: false
+    total_duration_sec: 60
+    expected_word_count: 50
+    valence_analysis: true
+features:
+  acoustic:
+    use_parselmouth: true
+    extract_pitch: true
+    extract_intensity: true
+    extract_formants: true
+    extract_voice_quality: true
+    pitch_floor: 75
+    pitch_ceiling: 500
+  semantic:
+    model: all-MiniLM-L6-v2
+    embedding_dim: 384
+    cache_size: 50000
+  phonetic:
+    model: PWE
+    embedding_dim: 300
+    cache_size: 50000
+  linguistic:
+    extract_word_frequency: true
+    extract_aoa: true
+    extract_concreteness: true
+    extract_imageability: true
+  temporal:
+    calculate_onset_latency: true
+    calculate_interword_intervals: true
+    calculate_burst_coefficient: true
+    calculate_bins_statistics: true
+  spatial_anchors:
+    visual:
+    - rotate
+    - pattern
+    - space
+    - shape
+    - design
+    - arrange
+    - symmetry
+    - grid
+    - angle
+    - dimension
+    spatial:
+    - above
+    - below
+    - left
+    - right
+    - inside
+    - outside
+    - between
+    - beside
+    - corner
+    - edge
+    reasoning:
+    - logic
+    - rule
+    - pattern
+    - sequence
+    - relation
+    - analogy
+    - correspond
+    - transform
+output:
+  save_segments: true
+  save_transcripts: true
+  save_features_per_trial: true
+  save_features_per_task: true
+  save_features_per_participant: true
