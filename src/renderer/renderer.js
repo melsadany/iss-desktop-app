@@ -38,23 +38,25 @@ $('#open-data-folder').addEventListener('click', async () => {
 
   function apply(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    try { localStorage.setItem('iss-theme', theme); } catch (e) {}
+    try {
+      localStorage.setItem('iss-theme', theme);
+    } catch (e) {}
+
     if (theme === 'dark') {
-      icon.textContent  = '\u263E'; // crescent moon
+      icon.textContent  = '☾';
       label.textContent = 'Dark';
     } else {
-      icon.textContent  = '\u2600'; // sun
+      icon.textContent  = '☀';
       label.textContent = 'Light';
     }
   }
 
-  // initial sync (the inline script in index.html already set the attribute)
-  const current = document.documentElement.getAttribute('data-theme') || 'dark';
-  apply(current);
+  const initial = document.documentElement.getAttribute('data-theme') || 'light';
+  apply(initial);
 
   btn.addEventListener('click', () => {
-    const now  = document.documentElement.getAttribute('data-theme') || 'dark';
-    const next = now === 'dark' ? 'light' : 'dark';
+    const current = document.documentElement.getAttribute('data-theme') || 'light';
+    const next = current === 'dark' ? 'light' : 'dark';
     apply(next);
   });
 })();
@@ -480,9 +482,16 @@ async function refreshResults() {
     ul.innerHTML = '<li class="muted">No CSVs found yet — run the pipeline first.</li>';
     return;
   }
-  for (const f of files) {
+  files.forEach((f) => {
     const li = document.createElement('li');
-    li.innerHTML = `<span>${f.name}</span><span class="file-meta">${(f.size/1024).toFixed(1)} KB</span>`;
+    const ext = f.ext.replace('.', '');
+    li.innerHTML = `
+      <span>
+        <span class="file-ext-badge ${ext}">${ext}</span>
+        ${esc(f.name)}
+      </span>
+      <span class="file-meta">${(f.size / 1024).toFixed(1)} KB</span>
+    `;
     li.addEventListener('click', () => {
       $$('#res-files li').forEach((x) => x.classList.remove('selected'));
       li.classList.add('selected');
@@ -492,35 +501,52 @@ async function refreshResults() {
   }
 }
 
-async function loadCsv(f) {
-  $('#res-title').textContent = f.name;
-  const { rows, truncated } = await window.iss.readCsv(f.path);
-  const head = $('#res-table thead');
-  const body = $('#res-table tbody');
-  head.innerHTML = '';
-  body.innerHTML = '';
-  if (rows.length === 0) return;
-  const trh = document.createElement('tr');
-  for (const cell of rows[0]) {
-    const th = document.createElement('th');
-    th.textContent = cell;
-    trh.appendChild(th);
-  }
-  head.appendChild(trh);
-  for (let i = 1; i < rows.length; i++) {
-    const tr = document.createElement('tr');
-    for (const cell of rows[i]) {
-      const td = document.createElement('td');
-      td.textContent = cell;
-      tr.appendChild(td);
+async function openResultFile(f) {
+  $('#res-filename').textContent = f.name;
+  $('#btn-open-file').hidden = false;
+  $('#btn-open-file').onclick = () => window.iss.openPath(f.path);
+  $('#res-filemeta').textContent =
+    `${(f.size / 1024).toFixed(1)} KB  •  ${new Date(f.mtime).toLocaleString()}`;
+
+  const tabular = ['.csv', '.tsv'];
+
+  if (tabular.includes(f.ext)) {
+    $('#res-table-wrap').hidden = false;
+    $('#res-nontabular').hidden = true;
+
+    try {
+      const { rows, truncated } = await window.iss.readCsv(f.path);
+      renderTable(rows);
+      if (truncated) {
+        $('#res-filemeta').textContent += '  •  (first 2 MB shown)';
+      }
+    } catch (err) {
+      $('#res-filemeta').textContent += `  •  Error reading file: ${err.message}`;
     }
-    body.appendChild(tr);
+  } else {
+    $('#res-table-wrap').hidden = true;
+    $('#res-nontabular').hidden = false;
+
+    const messages = {
+      '.rds':  `RDS file — open in R with <code>readRDS("${f.name}")</code>`,
+      '.json': 'JSON file — click "Open in folder" to inspect it.',
+      '.txt':  'Text file — click "Open in folder" to view it.',
+    };
+
+    $('#res-nontabular-msg').innerHTML =
+      messages[f.ext] || 'Binary or unsupported format — click "Open in folder" to view.';
   }
-  $('#res-truncated').textContent = truncated
-    ? 'File is large — only the first 2 MB are shown. Open the folder to view the full CSV.'
-    : '';
 }
 
+function clearResultPreview() {
+  $('#res-filename').textContent = 'No file selected';
+  $('#btn-open-file').hidden = true;
+  $('#res-filemeta').textContent = '';
+  $('#res-table-wrap').hidden = true;
+  $('#res-nontabular').hidden = true;
+  $('#res-table thead').innerHTML = '';
+  $('#res-table tbody').innerHTML = '';
+}
 // ---------- helpers ----------
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;" }[c]));

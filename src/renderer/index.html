@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <title>Iowa Speech Sample</title>
@@ -9,8 +9,8 @@
     // Apply saved theme before paint to avoid a flash
     (function() {
       try {
-        var t = localStorage.getItem('iss-theme') || 'dark';
-        document.documentElement.setAttribute('data-theme', t);
+        const saved = localStorage.getItem('iss-theme');
+        if (saved) document.documentElement.setAttribute('data-theme', saved);
       } catch (e) {}
     })();
   </script>
@@ -19,6 +19,7 @@
   <div id="app">
     <aside class="sidebar">
       <div class="brand">
+        <img src="assets/logo.png" class="brand-logo" alt="Iowa Speech Sample logo" onerror="this.style.display='none';document.getElementById('brand-fallback').style.display='flex'">
         <div class="brand-mark">ISS</div>
         <div class="brand-title">Iowa Speech Sample</div>
         <div class="brand-sub">Desktop · v1.0</div>

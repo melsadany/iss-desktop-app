@@ -25,7 +25,7 @@ const PARTICIPANTS_D = () => path.join(USER_DATA(), 'participants');
 const REF_DATA_DIR   = () => path.join(USER_DATA(), 'reference_data');
 const CONFIG_DIR     = () => path.join(USER_DATA(), 'config');
 
-const DOCKER_IMAGE = 'melsadany/iowa_speech_sample:v1.1';
+const DOCKER_IMAGE = 'melsadany/iowa_speech_sample:latest';
 const ZENODO_URL   = 'https://zenodo.org/records/18675411/files/reference_data.zip?download=1';
 
 // ---------- DB ----------
@@ -148,6 +148,11 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+  
+  // Optional: non-blocking freshness check
+  exec(`docker pull ${DOCKER_IMAGE}`, () => {
+    mainWin?.webContents.send('docker:pull-log', '[startup] Image freshness check complete.\n');
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -504,31 +509,42 @@ ipcMain.handle('pipeline:cancel', () => {
 ipcMain.handle('results:list', async (_e, participantId) => {
   const dir = path.join(PARTICIPANTS_D(), participantId, 'output', 'features');
   if (!fs.existsSync(dir)) return [];
+
+  const RESULT_EXTS = ['.csv', '.tsv', '.rds', '.json', '.txt'];
   const entries = await fsp.readdir(dir);
+
   const files = await Promise.all(
     entries
-      .filter((f) => f.endsWith('.csv'))
+      .filter((f) => RESULT_EXTS.includes(path.extname(f).toLowerCase()))
       .map(async (f) => {
         const full = path.join(dir, f);
         const stat = await fsp.stat(full);
-        return { name: f, path: full, size: stat.size, mtime: stat.mtime };
+        return {
+          name: f,
+          path: full,
+          size: stat.size,
+          mtime: stat.mtime,
+          ext: path.extname(f).toLowerCase(),
+        };
       })
   );
+
   files.sort((a, b) => b.mtime - a.mtime);
   return files;
 });
 
 ipcMain.handle('results:read-csv', async (_e, filepath) => {
   const raw = await fsp.readFile(filepath, 'utf8');
-  // Parse first ~2 MB to keep UI snappy on huge tables
   const max = 2 * 1024 * 1024;
   const text = raw.length > max ? raw.slice(0, max) : raw;
+  const sep = filepath.endsWith('.tsv') ? '\t' : ',';
   const lines = text.split(/\r?\n/).filter(Boolean);
-  const rows  = lines.map((line) => splitCSV(line));
+  const rows = lines.map((line) => splitDelimited(line, sep));
   return { rows, truncated: raw.length > max };
 });
 
-function splitCSV(line) {
+function splitDelimited(line, sep = ',') {
+  if (sep === '\t') return line.split('\t'); // simple for TSV
   const out = [];
   let cur = '', q = false;
   for (let i = 0; i < line.length; i++) {
@@ -538,7 +554,9 @@ function splitCSV(line) {
       else q = !q;
     } else if (ch === ',' && !q) {
       out.push(cur); cur = '';
-    } else cur += ch;
+    } else {
+      cur += ch;
+    }
   }
   out.push(cur);
   return out;
