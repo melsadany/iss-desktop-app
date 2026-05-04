@@ -19,10 +19,11 @@
   <div id="app">
     <aside class="sidebar">
       <div class="brand">
-        <img src="assets/logo.png" class="brand-logo" alt="Iowa Speech Sample logo" onerror="this.style.display='none';document.getElementById('brand-fallback').style.display='flex'">
-        <div class="brand-mark">ISS</div>
+        <img src="assets/logo.png" class="brand-logo" alt="Iowa Speech Sample logo"
+             onerror="this.style.display='none';document.getElementById('brand-fallback').style.display='flex'">
+        <div class="brand-mark" id="brand-fallback">ISS</div>
         <div class="brand-title">Iowa Speech Sample</div>
-        <div class="brand-sub">Desktop · v1.0</div>
+        <div class="brand-sub">Desktop &middot; v1.0</div>
       </div>
       <nav>
         <button class="nav-item active" data-view="setup">Setup</button>
@@ -33,7 +34,7 @@
       </nav>
       <div class="sidebar-foot">
         <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
-          <span class="toggle-icon" id="theme-icon">☾</span>
+          <span class="toggle-icon" id="theme-icon">&#9790;</span>
           <span class="toggle-label" id="theme-label">Dark</span>
         </button>
         <button id="open-data-folder" class="link-btn">Open data folder</button>
@@ -51,11 +52,11 @@
           <div class="card" id="card-docker">
             <div class="card-head">
               <h3>Docker</h3>
-              <span class="status pending" id="docker-status">checking…</span>
+              <span class="status pending" id="docker-status">checking&hellip;</span>
             </div>
             <p>The pipeline runs inside the <code>melsadany/iowa_speech_sample</code> container.
                Please install <a href="#" data-href="https://www.docker.com/products/docker-desktop/">Docker Desktop</a>
-               and make sure it's running.</p>
+               and make sure it&rsquo;s running.</p>
             <div class="card-actions">
               <button id="btn-recheck">Re-check</button>
             </div>
@@ -64,9 +65,9 @@
           <div class="card" id="card-image">
             <div class="card-head">
               <h3>Analysis image</h3>
-              <span class="status pending" id="image-status">—</span>
+              <span class="status pending" id="image-status">&mdash;</span>
             </div>
-            <p>Pull <code>melsadany/iowa_speech_sample:v1.0</code> (≈ several GB; one-time).</p>
+            <p>Pull <code>melsadany/iowa_speech_sample:latest</code> (&asymp; several GB; one-time).</p>
             <div class="card-actions">
               <button id="btn-pull">Pull image</button>
             </div>
@@ -76,7 +77,7 @@
           <div class="card" id="card-refdata">
             <div class="card-head">
               <h3>Reference data</h3>
-              <span class="status pending" id="ref-status">—</span>
+              <span class="status pending" id="ref-status">&mdash;</span>
             </div>
             <p>Download embeddings, archetypes, linguistic norms, and task metadata
                from <a href="#" data-href="https://zenodo.org/records/18675411">Zenodo</a>.</p>
@@ -188,15 +189,30 @@
             <label>Participant
               <select id="res-participant"></select>
             </label>
-            <button id="res-refresh">Refresh</button>
-            <button id="res-open-folder">Open output folder</button>
+            <div class="actions">
+              <button id="res-refresh">Refresh</button>
+              <button id="res-open-folder">Open output folder</button>
+            </div>
             <ul id="res-files" class="filelist"></ul>
           </div>
+
           <div class="card grow">
-            <h3 id="res-title">CSV viewer</h3>
-            <div class="table-wrap">
-              <table class="table" id="res-table"><thead></thead><tbody></tbody></table>
+            <div class="res-header">
+              <h3 id="res-filename">No file selected</h3>
+              <button id="btn-open-file" hidden>Open in folder</button>
             </div>
+            <p class="muted" id="res-filemeta"></p>
+
+            <div id="res-table-wrap" hidden>
+              <div class="table-wrap">
+                <table class="table" id="res-table"><thead></thead><tbody></tbody></table>
+              </div>
+            </div>
+
+            <div id="res-nontabular" hidden>
+              <p class="muted" id="res-nontabular-msg"></p>
+            </div>
+
             <p class="muted" id="res-truncated"></p>
           </div>
         </div>
