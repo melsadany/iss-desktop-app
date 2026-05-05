@@ -30,23 +30,56 @@ const DOCKER_IMAGE = 'melsadany/iowa_speech_sample:latest';
 const ZENODO_URL   = 'https://zenodo.org/records/18675411/files/reference_data.zip?download=1';
 
 // ---------- pipeline stages ----------
-// Each stage maps to the Docker image's internal stage argument.
-// outputCheck: relative path inside the participant output dir whose
-//   presence (non-empty dir or file) indicates this stage has been run.
+// stageArg: the value passed to --stage inside the container (matches pipeline.sh).
+// outputCheck: relative path inside the participant output dir checked for output.
+//   The pipeline writes into participant-namespaced subdirs, so we check
+//   <outputDir>/<outputCheck>/<participantId>/ rather than <outputDir>/<outputCheck>/.
 const PIPELINE_STAGES = [
-  { id: 'cropping',      label: 'Audio cropping',      outputCheck: 'cropped_audio'   },
-  { id: 'transcription', label: 'Transcription',        outputCheck: 'transcriptions'  },
-  { id: 'diarization',   label: 'Diarization',          outputCheck: 'review_files'    },
-  { id: 'r_pipeline',    label: 'R feature extraction', outputCheck: 'features'        },
-  { id: 'consolidation', label: 'Consolidation',        outputCheck: 'features'        },
+  {
+    id:          'stage1',
+    label:       'Audio preprocessing',
+    stageArg:    '1',
+    outputCheck: 'cropped_audio',   // written: cropped_audio/<participantId>/
+  },
+  {
+    id:          'stage2',
+    label:       'Transcription',
+    stageArg:    '2',
+    outputCheck: 'transcriptions',  // written: transcriptions/<participantId>/
+  },
+  {
+    id:          'stage3',
+    label:       'Transcription cleanup',
+    stageArg:    '3',
+    outputCheck: 'review_files',    // written: review_files/<participantId>_cleaned_transcription.tsv
+  },
+  {
+    id:          'stage4',
+    label:       'Feature extraction',
+    stageArg:    '4',
+    outputCheck: 'features',        // written: features/<participantId>_per_participant.csv
+  },
 ];
 
-// Returns true if the given output sub-dir exists and contains at least one file.
-async function stageOutputExists(outputDir, check) {
-  const dir = path.join(outputDir, check);
+// Returns true if the stage output dir/prefix for this participant is non-empty.
+// Checks <outputDir>/<check>/<participantId>/ first; falls back to any file
+// under <outputDir>/<check>/ that starts with participantId (for flat-file outputs).
+async function stageOutputExists(outputDir, check, participantId) {
+  // Primary check: participant-namespaced subdir (stages 1, 2)
+  const subDir = path.join(outputDir, check, participantId);
   try {
-    const entries = await fsp.readdir(dir);
-    return entries.length > 0;
+    const entries = await fsp.readdir(subDir);
+    if (entries.length > 0) return true;
+  } catch {
+    // subdir doesn't exist — try flat-file fallback
+  }
+
+  // Fallback: any file in <outputDir>/<check>/ whose name starts with participantId
+  // (covers review_files and features which write flat files named <ID>_*.tsv/.csv)
+  const flatDir = path.join(outputDir, check);
+  try {
+    const entries = await fsp.readdir(flatDir);
+    return entries.some((f) => f.startsWith(participantId));
   } catch {
     return false;
   }
@@ -419,13 +452,13 @@ ipcMain.handle('docker:force-pull', async () => {
 });
 
 // ---------- IPC: detect runnable stages ----------
-// For each stage, returns: { id, canRun, outputExists }
+// For each stage, returns: { id, label, canRun, outputExists }
 // Rules:
-//   - Stage 1 (cropping): always canRun (only needs the audio file, which is always present)
-//   - Stage N (N > 1): canRun only if the previous stage's outputCheck dir is non-empty
-//   - outputExists: whether this stage's own output dir is non-empty (used to pre-check the box)
+//   - Stage 1: always canRun (needs only the audio file)
+//   - Stage N (N > 1): canRun only if the previous stage's output exists
+//   - outputExists: whether this stage already has output for this participant
 ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
-  // Resolve session -> outputDir
+  // Resolve session -> participantId + outputDir
   const db = await loadDB();
   let session = db.sessions.find((s) => s.id === sessionId);
 
@@ -451,23 +484,23 @@ ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
 
   if (!session) throw new Error('Session not found.');
 
-  const outputDir = path.join(PARTICIPANTS_D(), session.participantId, 'output');
+  const participantId = session.participantId;
+  const outputDir = path.join(PARTICIPANTS_D(), participantId, 'output');
   const results = [];
 
   for (let i = 0; i < PIPELINE_STAGES.length; i++) {
     const stage = PIPELINE_STAGES[i];
-    const outputExists = await stageOutputExists(outputDir, stage.outputCheck);
+    const outputExists = await stageOutputExists(outputDir, stage.outputCheck, participantId);
 
-    // Can run if it's the first stage, or if the previous stage's output exists.
     const prevOutputExists = i === 0
       ? true
-      : await stageOutputExists(outputDir, PIPELINE_STAGES[i - 1].outputCheck);
+      : await stageOutputExists(outputDir, PIPELINE_STAGES[i - 1].outputCheck, participantId);
 
     results.push({
-      id:            stage.id,
-      label:         stage.label,
+      id:           stage.id,
+      label:        stage.label,
       outputExists,
-      canRun:        prevOutputExists
+      canRun:       prevOutputExists
     });
   }
 
@@ -477,8 +510,9 @@ ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
 // ---------- IPC: pipeline run (sequential stages) ----------
 let runningProc = null;
 
-// Build the base docker args (mounts, resource limits) shared by all stages
-function buildDockerBaseArgs(inputDir, outputDir, participantId) {
+// Build the base docker args (mounts, resource limits) shared by all stages.
+// The config file is mounted read-only into /app/config/task_template.yaml.
+function buildDockerBaseArgs(inputDir, outputDir) {
   const args = [
     'run', '--rm',
     '--memory=48g', '-e', 'R_MAX_SIZE=48GB',
@@ -494,7 +528,7 @@ function buildDockerBaseArgs(inputDir, outputDir, participantId) {
 
   const cfg = path.join(CONFIG_DIR(), 'task_template.yaml');
   if (fs.existsSync(cfg)) {
-    args.push('-v', `${cfg}:/app/config/task_template.yaml`);
+    args.push('-v', `${cfg}:/app/config/task_template.yaml:ro`);
   }
 
   return args;
@@ -567,6 +601,9 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
   }
 
   const audioInContainer = `/input/${path.basename(session.audioPath)}`;
+  // Config is always mounted at /app/config/task_template.yaml inside the container
+  const configInContainer = '/app/config/task_template.yaml';
+
   const sendLog   = (line) => mainWin?.webContents.send('pipeline:log', { sessionId, line });
   const sendStage = (stageId, status) =>
     mainWin?.webContents.send('pipeline:stage-update', { sessionId, stageId, status });
@@ -583,8 +620,16 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
     sendStage(stage.id, 'running');
     sendLog(`\n--- Stage: ${stage.label} ---\n`);
 
-    const baseArgs = buildDockerBaseArgs(inputDir, outputDir, participantId);
-    const stageArgs = [...baseArgs, DOCKER_IMAGE, participantId, audioInContainer, stage.id];
+    // Args: docker run <opts> <mounts> IMAGE <participantId> <audioFile> <config> --stage <N>
+    const baseArgs  = buildDockerBaseArgs(inputDir, outputDir);
+    const stageArgs = [
+      ...baseArgs,
+      DOCKER_IMAGE,
+      participantId,
+      audioInContainer,
+      configInContainer,
+      '--stage', stage.stageArg
+    ];
 
     sendLog(`$ docker ${stageArgs.join(' ')}\n`);
 
