@@ -7,6 +7,7 @@
  *   • Pull/run the melsadany/iowa_speech_sample Docker image
  *   • Auto-download the Zenodo reference_data archive on first run
  *   • Stream Docker stdout/stderr live to the renderer
+ *   • Run pipeline stages sequentially, emitting per-stage status events
  */
 
 const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
@@ -27,6 +28,17 @@ const CONFIG_DIR     = () => path.join(USER_DATA(), 'config');
 
 const DOCKER_IMAGE = 'melsadany/iowa_speech_sample:latest';
 const ZENODO_URL   = 'https://zenodo.org/records/18675411/files/reference_data.zip?download=1';
+
+// ---------- pipeline stages ----------
+// Each stage maps to the Docker image's internal stage argument.
+// They run sequentially; a failure stops the chain.
+const PIPELINE_STAGES = [
+  { id: 'cropping',       label: 'Audio cropping'      },
+  { id: 'transcription',  label: 'Transcription'        },
+  { id: 'diarization',    label: 'Diarization'          },
+  { id: 'r_pipeline',     label: 'R feature extraction' },
+  { id: 'consolidation',  label: 'Consolidation'        },
+];
 
 // ---------- DB ----------
 async function loadDB() {
@@ -140,7 +152,7 @@ app.whenReady().then(async () => {
   await fsp.mkdir(REF_DATA_DIR(),   { recursive: true });
   await fsp.mkdir(CONFIG_DIR(),     { recursive: true });
 
-  // Copy bundled task_template.yaml + task_video.mp4 into userData if missing
+  // Copy bundled task_template.yaml into userData if missing
   const bundledConfig = path.join(process.resourcesPath || path.join(__dirname, '..', '..', 'resources'), 'task_template.yaml');
   const userConfig    = path.join(CONFIG_DIR(), 'task_template.yaml');
   if (!fs.existsSync(userConfig) && fs.existsSync(bundledConfig)) {
@@ -148,7 +160,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
-  
+
   // Optional: non-blocking freshness check
   exec(`docker pull ${DOCKER_IMAGE}`, () => {
     mainWin?.webContents.send('docker:pull-log', '[startup] Image freshness check complete.\n');
@@ -198,7 +210,7 @@ ipcMain.handle('participants:list', async () => {
   return db.participants;
 });
 
-ipcMain.handle('participants:create', async (_e, { id, label, notes }) => {
+ipcMain.handle('participants:create', async (_e, { id, label, notes, age, sex, educationYears, handedness }) => {
   if (!id || !/^[A-Za-z0-9_\-]+$/.test(id)) {
     throw new Error('Participant ID must be alphanumeric (letters, digits, _ or -).');
   }
@@ -213,6 +225,10 @@ ipcMain.handle('participants:create', async (_e, { id, label, notes }) => {
     id,
     label: label || id,
     notes: notes || '',
+    age: age || null,
+    sex: sex || null,
+    educationYears: educationYears || null,
+    handedness: handedness || null,
     createdAt: new Date().toISOString(),
     dir
   };
@@ -226,7 +242,6 @@ ipcMain.handle('participants:delete', async (_e, id) => {
   db.participants = db.participants.filter((p) => p.id !== id);
   db.sessions     = db.sessions.filter((s) => s.participantId !== id);
   await saveDB(db);
-  // We do NOT delete on-disk recordings automatically — only the index.
   return true;
 });
 
@@ -234,7 +249,6 @@ ipcMain.handle('sessions:list', async (_e, participantId) => {
   const db = await loadDB();
   const sessions = [...db.sessions];
 
-  // Scan filesystem for audio files not registered in iss_db.json
   const AUDIO_EXTS = ['.wav', '.mp3', '.webm', '.ogg', '.flac', '.m4a'];
   const participantsDir = PARTICIPANTS_D();
 
@@ -346,7 +360,6 @@ ipcMain.handle('reference:download', async (event, { url } = {}) => {
 
   send({ phase: 'extracting', message: `Extracting to ${REF_DATA_DIR()}` });
 
-  // Cross-platform unzip — prefer system unzip; fall back to Node-based fallback
   await new Promise((resolve, reject) => {
     const unzipCmd = process.platform === 'win32'
       ? `powershell -Command "Expand-Archive -Force -Path '${tmp}' -DestinationPath '${REF_DATA_DIR()}'"`
@@ -376,12 +389,11 @@ ipcMain.handle('docker:pull', async () => {
     });
   });
 });
+
 ipcMain.handle('docker:force-pull', async () => {
   const send = (line) => mainWin?.webContents.send('docker:pull-log', line);
   return new Promise((resolve, reject) => {
-    // Remove local image first to guarantee a fresh download
     exec(`docker rmi ${DOCKER_IMAGE}`, () => {
-      // Ignore rmi errors (image may not exist) — always proceed to pull
       const proc = spawn('docker', ['pull', '--platform', 'linux/amd64', DOCKER_IMAGE]);
       proc.stdout.on('data', (d) => send(d.toString()));
       proc.stderr.on('data', (d) => send(d.toString()));
@@ -394,15 +406,50 @@ ipcMain.handle('docker:force-pull', async () => {
   });
 });
 
-// ---------- IPC: pipeline run ----------
+// ---------- IPC: pipeline run (sequential stages) ----------
 let runningProc = null;
+
+// Build the base docker args (mounts, resource limits) shared by all stages
+function buildDockerBaseArgs(inputDir, outputDir, participantId) {
+  const args = [
+    'run', '--rm',
+    '--memory=48g', '-e', 'R_MAX_SIZE=48GB',
+    '-v', `${inputDir}:/input`,
+    '-v', `${outputDir}:/app/output`
+  ];
+
+  if (fs.existsSync(REF_DATA_DIR()) && fs.readdirSync(REF_DATA_DIR()).length) {
+    const innerDir = path.join(REF_DATA_DIR(), 'reference_data');
+    const mountSrc = fs.existsSync(innerDir) ? innerDir : REF_DATA_DIR();
+    args.push('-v', `${mountSrc}:/app/reference_data`);
+  }
+
+  const cfg = path.join(CONFIG_DIR(), 'task_template.yaml');
+  if (fs.existsSync(cfg)) {
+    args.push('-v', `${cfg}:/app/config/task_template.yaml`);
+  }
+
+  return args;
+}
+
+// Run a single Docker stage; resolves with exit code
+function runStage(dockerArgs, onLog) {
+  return new Promise((resolve, reject) => {
+    runningProc = spawn('docker', dockerArgs);
+    runningProc.stdout.on('data', (d) => onLog(d.toString()));
+    runningProc.stderr.on('data', (d) => onLog(d.toString()));
+    runningProc.on('error', (err) => { runningProc = null; reject(err); });
+    runningProc.on('close', (code) => { runningProc = null; resolve(code); });
+  });
+}
 
 ipcMain.handle('pipeline:run', async (_e, { sessionId }) => {
   if (runningProc) throw new Error('A pipeline run is already in progress.');
+
   const db = await loadDB();
   let session = db.sessions.find((s) => s.id === sessionId);
-  
-  // Fallback: check if it's an imported (filesystem-only) session
+
+  // Fallback: imported (filesystem-only) session
   if (!session && sessionId.startsWith('imported_')) {
     const AUDIO_EXTS = ['.wav', '.mp3', '.webm', '.ogg', '.flac', '.m4a'];
     const participantsDir = PARTICIPANTS_D();
@@ -430,7 +477,7 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId }) => {
       }
     }
   }
-  
+
   if (!session) throw new Error('Session not found.');
 
   const participantId = session.participantId;
@@ -441,61 +488,64 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId }) => {
     await fsp.mkdir(path.join(outputDir, sub), { recursive: true });
   }
 
-  // The container expects /input/<file> and /app/output mounts
   const audioInContainer = `/input/${path.basename(session.audioPath)}`;
+  const sendLog   = (line) => mainWin?.webContents.send('pipeline:log', { sessionId, line });
+  const sendStage = (stageId, status) =>
+    mainWin?.webContents.send('pipeline:stage-update', { sessionId, stageId, status });
 
-  const dockerArgs = [
-    'run', '--rm',
-    '--memory=48g', '-e R_MAX_SIZE=48GB',
-    '-v', `${inputDir}:/input`,
-    '-v', `${outputDir}:/app/output`
-  ];
-
-  if (fs.existsSync(REF_DATA_DIR()) && fs.readdirSync(REF_DATA_DIR()).length) {
-    // Zenodo zip extracts a nested reference_data/ subfolder — detect and unwrap it
-    const innerDir = path.join(REF_DATA_DIR(), 'reference_data');
-    const mountSrc = fs.existsSync(innerDir) ? innerDir : REF_DATA_DIR();
-    dockerArgs.push('-v', `${mountSrc}:/app/reference_data`);
-  }
-  const cfg = path.join(CONFIG_DIR(), 'task_template.yaml');
-  if (fs.existsSync(cfg)) {
-    dockerArgs.push('-v', `${cfg}:/app/config/task_template.yaml`);
-  }
-
-  dockerArgs.push(DOCKER_IMAGE, participantId, audioInContainer);
-
-  const send = (line) => mainWin?.webContents.send('pipeline:log', { sessionId, line });
-
-  send(`$ docker ${dockerArgs.join(' ')}\n`);
+  // Mark session as running
   session.pipelineStatus = 'running';
   session.pipelineRunAt  = new Date().toISOString();
   await saveDB(db);
 
-  return new Promise((resolve) => {
-    runningProc = spawn('docker', dockerArgs);
-    runningProc.stdout.on('data', (d) => send(d.toString()));
-    runningProc.stderr.on('data', (d) => send(d.toString()));
-    runningProc.on('error', async (err) => {
-      send(`\n[error] ${err.message}\n`);
-      const db2 = await loadDB();
-      const s2 = db2.sessions.find((s) => s.id === sessionId);
-      if (s2) { s2.pipelineStatus = 'error'; await saveDB(db2); }
-      runningProc = null;
-      resolve({ ok: false, error: err.message });
-    });
-    runningProc.on('close', async (code) => {
-      send(`\n[exit ${code}]\n`);
-      const db2 = await loadDB();
-      const s2 = db2.sessions.find((s) => s.id === sessionId);
-      if (s2) {
-        s2.pipelineStatus = code === 0 ? 'completed' : 'error';
-        s2.pipelineExitCode = code;
-        await saveDB(db2);
-      }
-      runningProc = null;
-      resolve({ ok: code === 0, exitCode: code });
-    });
-  });
+  let overallOk = true;
+  let lastExitCode = 0;
+
+  for (const stage of PIPELINE_STAGES) {
+    sendStage(stage.id, 'running');
+    sendLog(`\n--- Stage: ${stage.label} ---\n`);
+
+    const baseArgs = buildDockerBaseArgs(inputDir, outputDir, participantId);
+    // Append image + participant ID + audio path + stage ID
+    const stageArgs = [...baseArgs, DOCKER_IMAGE, participantId, audioInContainer, stage.id];
+
+    sendLog(`$ docker ${stageArgs.join(' ')}\n`);
+
+    let exitCode;
+    try {
+      exitCode = await runStage(stageArgs, sendLog);
+    } catch (err) {
+      sendLog(`\n[error] ${err.message}\n`);
+      sendStage(stage.id, 'error');
+      overallOk = false;
+      lastExitCode = 1;
+      break;
+    }
+
+    lastExitCode = exitCode;
+
+    if (exitCode !== 0) {
+      sendLog(`\n[stage failed: exit ${exitCode}]\n`);
+      sendStage(stage.id, 'error');
+      overallOk = false;
+      break;
+    }
+
+    sendStage(stage.id, 'completed');
+  }
+
+  sendLog(`\n[pipeline ${overallOk ? 'completed' : 'failed'}: exit ${lastExitCode}]\n`);
+
+  // Persist final status
+  const db2 = await loadDB();
+  const s2 = db2.sessions.find((s) => s.id === sessionId);
+  if (s2) {
+    s2.pipelineStatus  = overallOk ? 'completed' : 'error';
+    s2.pipelineExitCode = lastExitCode;
+    await saveDB(db2);
+  }
+
+  return { ok: overallOk, exitCode: lastExitCode };
 });
 
 ipcMain.handle('pipeline:cancel', () => {
@@ -505,6 +555,9 @@ ipcMain.handle('pipeline:cancel', () => {
   }
   return false;
 });
+
+// Expose the stage list to the renderer so it can build the UI dynamically
+ipcMain.handle('pipeline:stages', () => PIPELINE_STAGES);
 
 // ---------- IPC: results ----------
 ipcMain.handle('results:list', async (_e, participantId) => {
@@ -545,7 +598,7 @@ ipcMain.handle('results:read-csv', async (_e, filepath) => {
 });
 
 function splitDelimited(line, sep = ',') {
-  if (sep === '\t') return line.split('\t'); // simple for TSV
+  if (sep === '\t') return line.split('\t');
   const out = [];
   let cur = '', q = false;
   for (let i = 0; i < line.length; i++) {
