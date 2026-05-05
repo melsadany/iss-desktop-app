@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('iss', {
   // pipeline
   runPipeline:    (data)              => ipcRenderer.invoke('pipeline:run', data),
   cancelPipeline: ()                  => ipcRenderer.invoke('pipeline:cancel'),
+  pipelineStages: ()                  => ipcRenderer.invoke('pipeline:stages'),
 
   // results
   listResults: (pid)                  => ipcRenderer.invoke('results:list', pid),
@@ -44,5 +45,10 @@ contextBridge.exposeInMainWorld('iss', {
     const fn = (_e, msg) => cb(msg);
     ipcRenderer.on('pipeline:log', fn);
     return () => ipcRenderer.removeListener('pipeline:log', fn);
+  },
+  onPipelineStageUpdate: (cb) => {
+    const fn = (_e, msg) => cb(msg);
+    ipcRenderer.on('pipeline:stage-update', fn);
+    return () => ipcRenderer.removeListener('pipeline:stage-update', fn);
   }
 });
