@@ -28,8 +28,9 @@ contextBridge.exposeInMainWorld('iss', {
   detectPipelineStages:  (data)       => ipcRenderer.invoke('pipeline:detect-stages', data),
 
   // transcription review
-  loadReview:  (participantId)        => ipcRenderer.invoke('review:load', participantId),
-  saveReview:  (data)                 => ipcRenderer.invoke('review:save', data),
+  loadReview:      (participantId)    => ipcRenderer.invoke('review:load', participantId),
+  saveReview:      (data)             => ipcRenderer.invoke('review:save', data),
+  getAudioFiles:   (participantId)    => ipcRenderer.invoke('review:get-audio-files', participantId),
 
   // results
   listResults: (pid)                  => ipcRenderer.invoke('results:list', pid),

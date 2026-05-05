@@ -258,8 +258,22 @@
               <button id="rev-save" disabled>Save changes</button>
             </div>
             <p id="rev-status" class="muted"></p>
-            <p class="hint">Click any cell to edit it. Changes are written back to the
-               <code>review_files/</code> TSV. Re-run stage&nbsp;4 after saving to update features.</p>
+            <p class="hint">Click any cell to edit the <em>response</em> column.
+               Use the <em>drop</em> and <em>comment</em> checkboxes to flag rows.
+               Changes are written back to the <code>review_files/</code> TSV.
+               Re-run stage&nbsp;4 after saving to update features.</p>
+
+            <!-- Audio playlist: shown after loading -->
+            <div id="rev-audio-wrap" hidden>
+              <h4>Audio</h4>
+              <!-- current clip label -->
+              <p id="rev-clip-label" class="muted rev-clip-label"></p>
+              <!-- native audio player -->
+              <audio id="rev-audio" controls preload="metadata"
+                     style="width:100%; margin-bottom: 0.5rem;"></audio>
+              <!-- playlist of clips -->
+              <div id="rev-playlist" class="rev-playlist"></div>
+            </div>
           </div>
 
           <div class="card grow">

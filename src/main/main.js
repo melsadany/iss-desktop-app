@@ -700,6 +700,43 @@ ipcMain.handle('review:save', async (_e, { filePath, rows }) => {
   return { ok: true };
 });
 
+// ---------- IPC: review audio files ----------
+// Scans output/cropped_audio/<participantId>/ and returns an ordered list of
+// { stem, filePath, fileUrl } objects — one entry per unique audio_file stem
+// in the order they appear on disk (sorted by filename, which matches task order).
+// The renderer uses fileUrl (file:// URI) directly as <audio src>.
+ipcMain.handle('review:get-audio-files', async (_e, participantId) => {
+  const AUDIO_EXTS = ['.wav', '.mp3', '.flac', '.ogg', '.m4a'];
+
+  // Cropped files may be in a participant subdirectory or directly in cropped_audio/
+  const baseDir  = path.join(PARTICIPANTS_D(), participantId, 'output', 'cropped_audio');
+  const subDir   = path.join(baseDir, participantId);
+
+  let searchDir = fs.existsSync(subDir) ? subDir : (fs.existsSync(baseDir) ? baseDir : null);
+  if (!searchDir) return [];
+
+  let entries;
+  try {
+    entries = await fsp.readdir(searchDir);
+  } catch {
+    return [];
+  }
+
+  const audioFiles = entries
+    .filter((f) => AUDIO_EXTS.includes(path.extname(f).toLowerCase()))
+    .sort() // alphabetical = task order as produced by the pipeline
+    .map((f) => {
+      const fullPath = path.join(searchDir, f);
+      return {
+        stem:    path.basename(f, path.extname(f)),  // e.g. "SUB0001_task-CHECKBOX_trial-1"
+        filePath: fullPath,
+        fileUrl:  `file://${fullPath.replace(/\\/g, '/')}` // Windows-safe
+      };
+    });
+
+  return audioFiles;
+});
+
 // ---------- IPC: results ----------
 ipcMain.handle('results:list', async (_e, participantId) => {
   const dir = path.join(PARTICIPANTS_D(), participantId, 'output', 'features');
