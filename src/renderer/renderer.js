@@ -38,10 +38,7 @@ $('#open-data-folder').addEventListener('click', async () => {
 
   function apply(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    try {
-      localStorage.setItem('iss-theme', theme);
-    } catch (e) {}
-
+    try { localStorage.setItem('iss-theme', theme); } catch (e) {}
     if (theme === 'dark') {
       icon.textContent  = '\u263E';
       label.textContent = 'Dark';
@@ -56,8 +53,7 @@ $('#open-data-folder').addEventListener('click', async () => {
 
   btn.addEventListener('click', () => {
     const current = document.documentElement.getAttribute('data-theme') || 'light';
-    const next = current === 'dark' ? 'light' : 'dark';
-    apply(next);
+    apply(current === 'dark' ? 'light' : 'dark');
   });
 })();
 
@@ -65,11 +61,11 @@ $('#open-data-folder').addEventListener('click', async () => {
 let state = {
   paths: null,
   participants: [],
+  pipelineStages: [],           // populated on init from main process
   selectedRecParticipant: null,
   selectedRunParticipant: null,
   selectedRunSession: null,
   selectedResParticipant: null,
-  // recorder
   audioStream: null,
   audioContext: null,
   mediaRecorder: null,
@@ -80,6 +76,7 @@ let state = {
 // ---------- bootstrap ----------
 (async function init() {
   state.paths = await window.iss.paths();
+  state.pipelineStages = await window.iss.pipelineStages();
   await refreshParticipants();
   await refreshSetup();
   bindSetup();
@@ -178,16 +175,27 @@ async function downloadReferenceData() {
 // ====================================================================
 function bindParticipants() {
   $('#np-create').addEventListener('click', async () => {
-    const id    = $('#np-id').value.trim();
-    const label = $('#np-label').value.trim();
-    const notes = $('#np-notes').value.trim();
-    const msg   = $('#np-msg');
+    const id            = $('#np-id').value.trim();
+    const label         = $('#np-label').value.trim();
+    const notes         = $('#np-notes').value.trim();
+    const age           = $('#np-age').value.trim();
+    const sex           = $('#np-sex').value;
+    const educationYears = $('#np-education').value.trim();
+    const handedness    = $('#np-handedness').value;
+    const msg           = $('#np-msg');
     msg.textContent = '';
     try {
-      await window.iss.createParticipant({ id, label, notes });
-      $('#np-id').value = '';
-      $('#np-label').value = '';
-      $('#np-notes').value = '';
+      await window.iss.createParticipant({
+        id, label, notes,
+        age:           age           ? Number(age)           : null,
+        sex:           sex           || null,
+        educationYears: educationYears ? Number(educationYears) : null,
+        handedness:    handedness    || null
+      });
+      // clear form
+      ['#np-id','#np-label','#np-notes','#np-age','#np-education'].forEach(s => $(s).value = '');
+      $('#np-sex').value = '';
+      $('#np-handedness').value = '';
       msg.textContent = `Created ${id}.`;
       await refreshParticipants();
       refreshParticipantsTable();
@@ -316,11 +324,7 @@ async function startTask() {
     }
 
     const buffer  = await finalBlob.arrayBuffer();
-    const session = await window.iss.saveRecording({
-      participantId: pid,
-      buffer,
-      extension
-    });
+    const session = await window.iss.saveRecording({ participantId: pid, buffer, extension });
     $('#rec-status').textContent = `Saved ${session.audioFilename}. Switch to "Run pipeline" to analyze.`;
     $('#rec-stop').disabled  = true;
     $('#rec-start').disabled = false;
@@ -379,11 +383,10 @@ async function convertToWav(blob) {
   const dataLen = samples.length * 2;
   const out = new ArrayBuffer(44 + dataLen);
   const v = new DataView(out);
-
-  v.setUint32(0,  0x52494646, false); // 'RIFF'
+  v.setUint32(0,  0x52494646, false);
   v.setUint32(4,  36 + dataLen, true);
-  v.setUint32(8,  0x57415645, false); // 'WAVE'
-  v.setUint32(12, 0x666d7420, false); // 'fmt '
+  v.setUint32(8,  0x57415645, false);
+  v.setUint32(12, 0x666d7420, false);
   v.setUint32(16, 16, true);
   v.setUint16(20, 1,  true);
   v.setUint16(22, 1,  true);
@@ -391,9 +394,8 @@ async function convertToWav(blob) {
   v.setUint32(28, sr * 2, true);
   v.setUint16(32, 2,  true);
   v.setUint16(34, 16, true);
-  v.setUint32(36, 0x64617461, false); // 'data'
+  v.setUint32(36, 0x64617461, false);
   v.setUint32(40, dataLen, true);
-
   let offset = 44;
   for (let i = 0; i < samples.length; i++, offset += 2) {
     const s = Math.max(-1, Math.min(1, samples[i]));
@@ -405,14 +407,52 @@ async function convertToWav(blob) {
 // ====================================================================
 // RUN
 // ====================================================================
+function buildStagePanel() {
+  const list = $('#stage-list');
+  list.innerHTML = '';
+  for (const stage of state.pipelineStages) {
+    const li = document.createElement('li');
+    li.className = 'stage-item';
+    li.dataset.stageId = stage.id;
+    li.innerHTML = `
+      <span class="stage-dot"></span>
+      <span class="stage-label">${escapeHtml(stage.label)}</span>
+      <span class="stage-badge"></span>`;
+    list.appendChild(li);
+  }
+}
+
+function resetStagePanel() {
+  $$('.stage-item').forEach((li) => {
+    li.className = 'stage-item';
+    li.querySelector('.stage-badge').textContent = '';
+  });
+}
+
+function updateStageUI(stageId, status) {
+  const li = $(`.stage-item[data-stage-id="${stageId}"]`);
+  if (!li) return;
+  li.className = `stage-item ${status}`;
+  const badge = li.querySelector('.stage-badge');
+  const labels = { running: 'running', completed: 'done', error: 'error' };
+  badge.textContent = labels[status] || '';
+}
+
 function bindRun() {
+  buildStagePanel();
+
   $('#run-participant').addEventListener('change', refreshRunSessions);
   $('#run-start').addEventListener('click', runPipeline);
   $('#run-cancel').addEventListener('click', () => window.iss.cancelPipeline());
+
   window.iss.onPipelineLog(({ line }) => {
     const log = $('#run-log');
     log.textContent += line;
     log.scrollTop = log.scrollHeight;
+  });
+
+  window.iss.onPipelineStageUpdate(({ stageId, status }) => {
+    updateStageUI(stageId, status);
   });
 }
 
@@ -439,8 +479,10 @@ async function runPipeline() {
   if (!sessionId) { $('#run-status').textContent = 'Pick a session first.'; return; }
   $('#run-log').textContent = '';
   $('#run-status').textContent = 'Starting\u2026';
-  $('#run-start').disabled = true;
+  $('#run-start').disabled  = true;
   $('#run-cancel').disabled = false;
+  $('#stage-panel').hidden  = false;
+  resetStagePanel();
   try {
     const r = await window.iss.runPipeline({ sessionId });
     $('#run-status').textContent = r.ok
@@ -449,7 +491,7 @@ async function runPipeline() {
   } catch (err) {
     $('#run-status').textContent = 'Error: ' + err.message;
   } finally {
-    $('#run-start').disabled = false;
+    $('#run-start').disabled  = false;
     $('#run-cancel').disabled = true;
   }
 }
@@ -572,5 +614,3 @@ function escapeHtml(s) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
-// alias used in results list rendering
-const esc = escapeHtml;
