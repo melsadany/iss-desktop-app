@@ -13,7 +13,6 @@
  */
 
 :root {
-  /* shared */
   --primary:    #4782b4;
   --primary-2:  #88ADE1;
   --accent:     #ff4600;
@@ -187,6 +186,7 @@ nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .view.active { display: block; }
 h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; color: var(--text); }
 h3 { margin: 0 0 12px; font-size: 15px; font-weight: 600; color: var(--text); }
+h4 { margin: 14px 0 8px; font-size: 13px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; }
 .lead { color: var(--text-dim); margin: 0 0 22px; }
 
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
@@ -263,6 +263,14 @@ button.danger:hover:not(:disabled) {
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .card-actions { margin-top: 10px; display: flex; gap: 8px; }
 
+/* ---------- two-column field group ---------- */
+.field-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.field-group label { margin: 6px 0; }
+
 .muted { color: var(--text-dim); font-size: 12px; }
 .hint  { color: var(--text-dim); font-size: 12px; margin-top: 8px; }
 
@@ -290,6 +298,74 @@ progress::-webkit-progress-bar { background: var(--panel-2); }
 progress::-webkit-progress-value { background: var(--primary); }
 progress::-moz-progress-bar      { background: var(--primary); }
 
+/* ---------- stage progress panel ---------- */
+.stage-panel {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.stage-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stage-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 6px 8px;
+  border-radius: 6px;
+  transition: background .15s ease;
+}
+
+.stage-item.running  { background: rgba(71,130,180,.08); color: var(--text); }
+.stage-item.completed { background: rgba(57,192,143,.08); color: var(--text); }
+.stage-item.error    { background: rgba(193,98,74,.08); color: var(--bad); }
+
+/* status dot */
+.stage-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 10px;
+  background: var(--border);
+  transition: background .2s ease;
+}
+
+.stage-item.running   .stage-dot {
+  background: var(--primary);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+.stage-item.completed .stage-dot { background: var(--good); animation: none; }
+.stage-item.error     .stage-dot { background: var(--bad);  animation: none; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: .35; }
+}
+
+.stage-label { flex: 1; }
+
+.stage-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+.stage-item.running   .stage-badge { background: rgba(71,130,180,.18); color: var(--primary); border-color: rgba(71,130,180,.4); }
+.stage-item.completed .stage-badge { background: rgba(57,192,143,.18); color: var(--good);    border-color: rgba(57,192,143,.4); }
+.stage-item.error     .stage-badge { background: rgba(193,98,74,.18);  color: var(--bad);     border-color: rgba(193,98,74,.4); }
+.stage-item:not(.running):not(.completed):not(.error) .stage-badge { display: none; }
+
+/* ---------- tables ---------- */
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th, .table td {
   text-align: left; padding: 8px 10px;
@@ -300,6 +376,7 @@ progress::-moz-progress-bar      { background: var(--primary); }
 .table tbody tr:hover { background: var(--panel-2); }
 .table-wrap { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 
+/* ---------- file list ---------- */
 .filelist { list-style: none; padding: 0; margin: 12px 0 0; }
 .filelist li {
   padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
@@ -313,6 +390,22 @@ progress::-moz-progress-bar      { background: var(--primary); }
   border-color: var(--primary);
 }
 .filelist .file-meta { color: var(--text-dim); font-size: 11px; }
+
+/* file extension badges */
+.file-ext-badge {
+  display: inline-block;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--panel-2); color: var(--text-dim);
+  border: 1px solid var(--border);
+  margin-right: 4px;
+  letter-spacing: .3px;
+}
+.file-ext-badge.csv  { background: rgba(57,192,143,.15); color: var(--good); border-color: rgba(57,192,143,.4); }
+.file-ext-badge.tsv  { background: rgba(0,192,197,.15);  color: var(--info); border-color: rgba(0,192,197,.4); }
+.file-ext-badge.rds  { background: rgba(71,130,180,.15); color: var(--primary); border-color: rgba(71,130,180,.4); }
+.file-ext-badge.json { background: rgba(243,177,153,.2); color: var(--bad);  border-color: rgba(243,177,153,.5); }
+.file-ext-badge.txt  { background: rgba(174,104,133,.15); color: var(--highlight); border-color: rgba(174,104,133,.4); }
 
 .res-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 
