@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="styles.css" />
   <script>
-    // Apply saved theme before paint to avoid a flash
     (function() {
       try {
         const saved = localStorage.getItem('iss-theme');
@@ -24,7 +23,7 @@
         <div class="brand-mark" id="brand-fallback" style="display:none">ISS</div>
         <div class="brand-copy">
           <div class="brand-title">Iowa Speech Sample</div>
-          <div class="brand-sub">Desktop &middot; v1.0</div>
+          <div class="brand-sub">Desktop &middot; v1.1</div>
         </div>
       </div>
       <nav>
@@ -104,6 +103,35 @@
             <label>Label (optional)
               <input id="np-label" placeholder="Display name" />
             </label>
+
+            <!-- Optional demographic fields -->
+            <div class="field-group">
+              <label>Age (years)
+                <input id="np-age" type="number" min="0" max="120" placeholder="e.g. 34" />
+              </label>
+              <label>Biological sex
+                <select id="np-sex">
+                  <option value="">-- not specified --</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                  <option value="Other">Other</option>
+                </select>
+              </label>
+            </div>
+            <div class="field-group">
+              <label>Education (years)
+                <input id="np-education" type="number" min="0" max="30" placeholder="e.g. 16" />
+              </label>
+              <label>Handedness
+                <select id="np-handedness">
+                  <option value="">-- not specified --</option>
+                  <option value="Right">Right</option>
+                  <option value="Left">Left</option>
+                  <option value="Ambidextrous">Ambidextrous</option>
+                </select>
+              </label>
+            </div>
+
             <label>Notes
               <textarea id="np-notes" rows="3" placeholder="Anything to remember"></textarea>
             </label>
@@ -173,6 +201,12 @@
               <button id="run-cancel" disabled>Cancel</button>
             </div>
             <p id="run-status" class="muted"></p>
+
+            <!-- Stage progress panel (populated by renderer.js via pipeline:stages) -->
+            <div class="stage-panel" id="stage-panel" hidden>
+              <h4>Stages</h4>
+              <ul class="stage-list" id="stage-list"></ul>
+            </div>
           </div>
 
           <div class="card grow">
