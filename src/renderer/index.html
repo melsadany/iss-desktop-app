@@ -207,6 +207,23 @@
               </div>
               <p class="hint" id="detect-hint">Select a session, then click Detect to auto-select runnable stages.</p>
               <ul class="stage-checklist" id="stage-checklist"></ul>
+
+              <!-- Whisper model selector — visible only when Stage 2 is checked -->
+              <div class="whisper-model-row" id="whisper-model-row" hidden>
+                <label class="whisper-model-label" for="whisper-model">
+                  Whisper model
+                  <select id="whisper-model">
+                    <option value="small" selected>small (default, ~2 GB RAM)</option>
+                    <option value="medium">medium (~5 GB RAM)</option>
+                    <option value="large-v2">large-v2 (~10 GB RAM)</option>
+                    <option value="large-v3">large-v3 (~10 GB RAM)</option>
+                  </select>
+                </label>
+                <p class="hint warn" id="whisper-ram-warn" hidden>
+                  &#9888;&nbsp;Larger models require significantly more RAM. Make sure Docker Desktop
+                  is allocated enough memory (Preferences &rarr; Resources &rarr; Memory) before running.
+                </p>
+              </div>
             </div>
 
             <div class="actions">

@@ -452,13 +452,7 @@ ipcMain.handle('docker:force-pull', async () => {
 });
 
 // ---------- IPC: detect runnable stages ----------
-// For each stage, returns: { id, label, canRun, outputExists }
-// Rules:
-//   - Stage 1: always canRun (needs only the audio file)
-//   - Stage N (N > 1): canRun only if the previous stage's output exists
-//   - outputExists: whether this stage already has output for this participant
 ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
-  // Resolve session -> participantId + outputDir
   const db = await loadDB();
   let session = db.sessions.find((s) => s.id === sessionId);
 
@@ -491,27 +485,18 @@ ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
   for (let i = 0; i < PIPELINE_STAGES.length; i++) {
     const stage = PIPELINE_STAGES[i];
     const outputExists = await stageOutputExists(outputDir, stage.outputCheck, participantId);
-
     const prevOutputExists = i === 0
       ? true
       : await stageOutputExists(outputDir, PIPELINE_STAGES[i - 1].outputCheck, participantId);
-
-    results.push({
-      id:           stage.id,
-      label:        stage.label,
-      outputExists,
-      canRun:       prevOutputExists
-    });
+    results.push({ id: stage.id, label: stage.label, outputExists, canRun: prevOutputExists });
   }
 
   return results;
 });
 
-// ---------- IPC: pipeline run (sequential stages) ----------
+// ---------- IPC: pipeline run ----------
 let runningProc = null;
 
-// Build the base docker args (mounts, resource limits) shared by all stages.
-// The config file is mounted read-only into /app/config/task_template.yaml.
 function buildDockerBaseArgs(inputDir, outputDir) {
   const args = [
     'run', '--rm',
@@ -534,7 +519,6 @@ function buildDockerBaseArgs(inputDir, outputDir) {
   return args;
 }
 
-// Run a single Docker stage; resolves with exit code
 function runStage(dockerArgs, onLog) {
   return new Promise((resolve, reject) => {
     runningProc = spawn('docker', dockerArgs);
@@ -545,15 +529,14 @@ function runStage(dockerArgs, onLog) {
   });
 }
 
-// pipeline:run accepts an optional `stages` array of stage IDs.
-// If omitted, all stages run in order.
-ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
+// pipeline:run accepts optional `stages` (array of stage IDs) and
+// optional `whisperModel` (string, applied to stage2 only).
+ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) => {
   if (runningProc) throw new Error('A pipeline run is already in progress.');
 
   const db = await loadDB();
   let session = db.sessions.find((s) => s.id === sessionId);
 
-  // Fallback: imported (filesystem-only) session
   if (!session && sessionId.startsWith('imported_')) {
     const AUDIO_EXTS = ['.wav', '.mp3', '.webm', '.ogg', '.flac', '.m4a'];
     const participantsDir = PARTICIPANTS_D();
@@ -584,7 +567,6 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
 
   if (!session) throw new Error('Session not found.');
 
-  // Filter to the requested subset of stages (preserve original order)
   const stageSet = stages && stages.length > 0 ? new Set(stages) : null;
   const stagesToRun = stageSet
     ? PIPELINE_STAGES.filter((s) => stageSet.has(s.id))
@@ -600,15 +582,13 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
     await fsp.mkdir(path.join(outputDir, sub), { recursive: true });
   }
 
-  const audioInContainer = `/input/${path.basename(session.audioPath)}`;
-  // Config is always mounted at /app/config/task_template.yaml inside the container
+  const audioInContainer  = `/input/${path.basename(session.audioPath)}`;
   const configInContainer = '/app/config/task_template.yaml';
 
   const sendLog   = (line) => mainWin?.webContents.send('pipeline:log', { sessionId, line });
   const sendStage = (stageId, status) =>
     mainWin?.webContents.send('pipeline:stage-update', { sessionId, stageId, status });
 
-  // Mark session as running
   session.pipelineStatus = 'running';
   session.pipelineRunAt  = new Date().toISOString();
   await saveDB(db);
@@ -620,17 +600,22 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
     sendStage(stage.id, 'running');
     sendLog(`\n--- Stage: ${stage.label} ---\n`);
 
-    // Args: docker run <opts> <mounts> IMAGE <participantId> <audioFile> <config> --stage <N>
     const baseArgs  = buildDockerBaseArgs(inputDir, outputDir);
-    const stageArgs = [
-      ...baseArgs,
-      DOCKER_IMAGE,
+
+    // Build post-image args: positional args then optional flags
+    const imageArgs = [
       participantId,
       audioInContainer,
       configInContainer,
       '--stage', stage.stageArg
     ];
 
+    // Append --whisper-model only for the transcription stage
+    if (stage.id === 'stage2' && whisperModel && whisperModel !== 'small') {
+      imageArgs.push('--whisper-model', whisperModel);
+    }
+
+    const stageArgs = [...baseArgs, DOCKER_IMAGE, ...imageArgs];
     sendLog(`$ docker ${stageArgs.join(' ')}\n`);
 
     let exitCode;
@@ -658,11 +643,10 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
 
   sendLog(`\n[pipeline ${overallOk ? 'completed' : 'failed'}: exit ${lastExitCode}]\n`);
 
-  // Persist final status
   const db2 = await loadDB();
   const s2 = db2.sessions.find((s) => s.id === sessionId);
   if (s2) {
-    s2.pipelineStatus  = overallOk ? 'completed' : 'error';
+    s2.pipelineStatus   = overallOk ? 'completed' : 'error';
     s2.pipelineExitCode = lastExitCode;
     await saveDB(db2);
   }
@@ -678,7 +662,6 @@ ipcMain.handle('pipeline:cancel', () => {
   return false;
 });
 
-// Expose the stage list to the renderer so it can build the UI dynamically
 ipcMain.handle('pipeline:stages', () => PIPELINE_STAGES);
 
 // ---------- IPC: results ----------

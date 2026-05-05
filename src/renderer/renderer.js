@@ -439,6 +439,30 @@ function buildStageChecklist() {
       </label>`;
     ul.appendChild(li);
   }
+
+  // Wire up the whisper model row visibility on Stage 2 checkbox
+  const stage2cb = $('.stage-checkbox[data-stage-id="stage2"]');
+  if (stage2cb) {
+    stage2cb.addEventListener('change', updateWhisperModelVisibility);
+    updateWhisperModelVisibility(); // set initial state
+  }
+}
+
+// Show/hide the whisper model row based on whether stage2 is checked
+function updateWhisperModelVisibility() {
+  const stage2cb = $('.stage-checkbox[data-stage-id="stage2"]');
+  const row = $('#whisper-model-row');
+  if (!stage2cb || !row) return;
+  const visible = stage2cb.checked && !stage2cb.disabled;
+  row.hidden = !visible;
+}
+
+// Show/hide the RAM warning based on selected whisper model
+function updateWhisperRamWarn() {
+  const sel  = $('#whisper-model');
+  const warn = $('#whisper-ram-warn');
+  if (!sel || !warn) return;
+  warn.hidden = sel.value === 'small';
 }
 
 function resetStagePanel() {
@@ -478,19 +502,22 @@ async function detectRunnableStages() {
       if (!cb) continue;
 
       cb.disabled = !r.canRun;
-      cb.checked  = r.canRun;   // check if runnable, uncheck if prereq missing
+      cb.checked  = r.canRun;
 
       if (!r.canRun) {
         badge.textContent = 'prereq missing';
         badge.className = 'stage-check-badge badge-disabled';
       } else if (r.outputExists) {
-        badge.textContent = 'output exists — will re-run';
+        badge.textContent = 'output exists \u2014 will re-run';
         badge.className = 'stage-check-badge badge-warn';
       } else {
         badge.textContent = '';
         badge.className = 'stage-check-badge';
       }
     }
+
+    // Re-evaluate whisper row after detect may have changed stage2 state
+    updateWhisperModelVisibility();
 
     const runnable = results.filter((r) => r.canRun).length;
     $('#detect-hint').textContent =
@@ -508,11 +535,17 @@ function bindRun() {
 
   $('#run-participant').addEventListener('change', refreshRunSessions);
   $('#run-session').addEventListener('change', () => {
-    // Reset badges and hint when session changes
+    // Reset badges, checkboxes, whisper selector, and hint when session changes
     $$('.stage-check-badge').forEach((b) => { b.textContent = ''; b.className = 'stage-check-badge'; });
     $$('.stage-checkbox').forEach((cb) => { cb.disabled = false; cb.checked = true; });
+    $('#whisper-model').value = 'small';
+    updateWhisperModelVisibility();
+    updateWhisperRamWarn();
     $('#detect-hint').textContent = 'Select a session, then click Detect to auto-select runnable stages.';
   });
+
+  // Whisper model dropdown: show/hide RAM warning
+  $('#whisper-model').addEventListener('change', updateWhisperRamWarn);
 
   $('#btn-detect-stages').addEventListener('click', detectRunnableStages);
   $('#run-start').addEventListener('click', runPipeline);
@@ -563,6 +596,11 @@ async function runPipeline() {
     return;
   }
 
+  // Read whisper model only if stage2 is in the selected set
+  const whisperModel = selectedStages.includes('stage2')
+    ? ($('#whisper-model').value || 'small')
+    : null;
+
   $('#run-log').textContent = '';
   $('#run-status').textContent = 'Starting\u2026';
   $('#run-start').disabled  = true;
@@ -578,7 +616,7 @@ async function runPipeline() {
   });
 
   try {
-    const r = await window.iss.runPipeline({ sessionId, stages: selectedStages });
+    const r = await window.iss.runPipeline({ sessionId, stages: selectedStages, whisperModel });
     $('#run-status').textContent = r.ok
       ? 'Pipeline finished successfully.'
       : `Pipeline exited with code ${r.exitCode ?? '?'}.`;
