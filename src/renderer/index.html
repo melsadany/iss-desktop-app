@@ -196,15 +196,28 @@
             <label>Session
               <select id="run-session"></select>
             </label>
+
+            <!-- Stage selection -->
+            <div class="stage-select" id="stage-select">
+              <div class="stage-select-head">
+                <h4>Stages to run</h4>
+                <button id="btn-detect-stages" class="btn-small" title="Auto-detect which stages can be run based on existing output files">
+                  Detect
+                </button>
+              </div>
+              <p class="hint" id="detect-hint">Select a session, then click Detect to auto-select runnable stages.</p>
+              <ul class="stage-checklist" id="stage-checklist"></ul>
+            </div>
+
             <div class="actions">
-              <button id="run-start" class="primary">Run pipeline</button>
+              <button id="run-start" class="primary">Run selected stages</button>
               <button id="run-cancel" disabled>Cancel</button>
             </div>
             <p id="run-status" class="muted"></p>
 
-            <!-- Stage progress panel (populated by renderer.js via pipeline:stages) -->
+            <!-- Stage progress panel (shown during/after run) -->
             <div class="stage-panel" id="stage-panel" hidden>
-              <h4>Stages</h4>
+              <h4>Progress</h4>
               <ul class="stage-list" id="stage-list"></ul>
             </div>
           </div>

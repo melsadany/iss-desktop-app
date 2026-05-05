@@ -31,14 +31,26 @@ const ZENODO_URL   = 'https://zenodo.org/records/18675411/files/reference_data.z
 
 // ---------- pipeline stages ----------
 // Each stage maps to the Docker image's internal stage argument.
-// They run sequentially; a failure stops the chain.
+// outputCheck: relative path inside the participant output dir whose
+//   presence (non-empty dir or file) indicates this stage has been run.
 const PIPELINE_STAGES = [
-  { id: 'cropping',       label: 'Audio cropping'      },
-  { id: 'transcription',  label: 'Transcription'        },
-  { id: 'diarization',    label: 'Diarization'          },
-  { id: 'r_pipeline',     label: 'R feature extraction' },
-  { id: 'consolidation',  label: 'Consolidation'        },
+  { id: 'cropping',      label: 'Audio cropping',      outputCheck: 'cropped_audio'   },
+  { id: 'transcription', label: 'Transcription',        outputCheck: 'transcriptions'  },
+  { id: 'diarization',   label: 'Diarization',          outputCheck: 'review_files'    },
+  { id: 'r_pipeline',    label: 'R feature extraction', outputCheck: 'features'        },
+  { id: 'consolidation', label: 'Consolidation',        outputCheck: 'features'        },
 ];
+
+// Returns true if the given output sub-dir exists and contains at least one file.
+async function stageOutputExists(outputDir, check) {
+  const dir = path.join(outputDir, check);
+  try {
+    const entries = await fsp.readdir(dir);
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 // ---------- DB ----------
 async function loadDB() {
@@ -406,6 +418,62 @@ ipcMain.handle('docker:force-pull', async () => {
   });
 });
 
+// ---------- IPC: detect runnable stages ----------
+// For each stage, returns: { id, canRun, outputExists }
+// Rules:
+//   - Stage 1 (cropping): always canRun (only needs the audio file, which is always present)
+//   - Stage N (N > 1): canRun only if the previous stage's outputCheck dir is non-empty
+//   - outputExists: whether this stage's own output dir is non-empty (used to pre-check the box)
+ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
+  // Resolve session -> outputDir
+  const db = await loadDB();
+  let session = db.sessions.find((s) => s.id === sessionId);
+
+  if (!session && sessionId.startsWith('imported_')) {
+    const AUDIO_EXTS = ['.wav', '.mp3', '.webm', '.ogg', '.flac', '.m4a'];
+    const participantsDir = PARTICIPANTS_D();
+    outer: for (const pid of await fsp.readdir(participantsDir).catch(() => [])) {
+      const inputDir = path.join(participantsDir, pid, 'input');
+      if (!fs.existsSync(inputDir)) continue;
+      for (const file of await fsp.readdir(inputDir).catch(() => [])) {
+        if (!AUDIO_EXTS.includes(path.extname(file).toLowerCase())) continue;
+        if (`imported_${pid}_${file}` === sessionId) {
+          session = {
+            id: sessionId,
+            participantId: pid,
+            outputDir: path.join(participantsDir, pid, 'output')
+          };
+          break outer;
+        }
+      }
+    }
+  }
+
+  if (!session) throw new Error('Session not found.');
+
+  const outputDir = path.join(PARTICIPANTS_D(), session.participantId, 'output');
+  const results = [];
+
+  for (let i = 0; i < PIPELINE_STAGES.length; i++) {
+    const stage = PIPELINE_STAGES[i];
+    const outputExists = await stageOutputExists(outputDir, stage.outputCheck);
+
+    // Can run if it's the first stage, or if the previous stage's output exists.
+    const prevOutputExists = i === 0
+      ? true
+      : await stageOutputExists(outputDir, PIPELINE_STAGES[i - 1].outputCheck);
+
+    results.push({
+      id:            stage.id,
+      label:         stage.label,
+      outputExists,
+      canRun:        prevOutputExists
+    });
+  }
+
+  return results;
+});
+
 // ---------- IPC: pipeline run (sequential stages) ----------
 let runningProc = null;
 
@@ -443,7 +511,9 @@ function runStage(dockerArgs, onLog) {
   });
 }
 
-ipcMain.handle('pipeline:run', async (_e, { sessionId }) => {
+// pipeline:run accepts an optional `stages` array of stage IDs.
+// If omitted, all stages run in order.
+ipcMain.handle('pipeline:run', async (_e, { sessionId, stages }) => {
   if (runningProc) throw new Error('A pipeline run is already in progress.');
 
   const db = await loadDB();
@@ -480,6 +550,14 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId }) => {
 
   if (!session) throw new Error('Session not found.');
 
+  // Filter to the requested subset of stages (preserve original order)
+  const stageSet = stages && stages.length > 0 ? new Set(stages) : null;
+  const stagesToRun = stageSet
+    ? PIPELINE_STAGES.filter((s) => stageSet.has(s.id))
+    : PIPELINE_STAGES;
+
+  if (stagesToRun.length === 0) throw new Error('No valid stages selected.');
+
   const participantId = session.participantId;
   const inputDir  = path.dirname(session.audioPath);
   const outputDir = path.join(PARTICIPANTS_D(), participantId, 'output');
@@ -501,12 +579,11 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId }) => {
   let overallOk = true;
   let lastExitCode = 0;
 
-  for (const stage of PIPELINE_STAGES) {
+  for (const stage of stagesToRun) {
     sendStage(stage.id, 'running');
     sendLog(`\n--- Stage: ${stage.label} ---\n`);
 
     const baseArgs = buildDockerBaseArgs(inputDir, outputDir, participantId);
-    // Append image + participant ID + audio path + stage ID
     const stageArgs = [...baseArgs, DOCKER_IMAGE, participantId, audioInContainer, stage.id];
 
     sendLog(`$ docker ${stageArgs.join(' ')}\n`);

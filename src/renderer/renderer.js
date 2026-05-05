@@ -407,6 +407,8 @@ async function convertToWav(blob) {
 // ====================================================================
 // RUN
 // ====================================================================
+
+// Build the stage progress list (shown during/after a run)
 function buildStagePanel() {
   const list = $('#stage-list');
   list.innerHTML = '';
@@ -419,6 +421,23 @@ function buildStagePanel() {
       <span class="stage-label">${escapeHtml(stage.label)}</span>
       <span class="stage-badge"></span>`;
     list.appendChild(li);
+  }
+}
+
+// Build the stage checklist (selection UI)
+function buildStageChecklist() {
+  const ul = $('#stage-checklist');
+  ul.innerHTML = '';
+  for (const stage of state.pipelineStages) {
+    const li = document.createElement('li');
+    li.className = 'stage-check-item';
+    li.innerHTML = `
+      <label class="stage-check-label">
+        <input type="checkbox" class="stage-checkbox" data-stage-id="${escapeHtml(stage.id)}" checked />
+        <span>${escapeHtml(stage.label)}</span>
+        <span class="stage-check-badge" data-stage-id="${escapeHtml(stage.id)}"></span>
+      </label>`;
+    ul.appendChild(li);
   }
 }
 
@@ -438,10 +457,64 @@ function updateStageUI(stageId, status) {
   badge.textContent = labels[status] || '';
 }
 
+// Call pipeline:detect-stages and apply results to the checklist
+async function detectRunnableStages() {
+  const sessionId = $('#run-session').value;
+  if (!sessionId) {
+    $('#detect-hint').textContent = 'Select a session first.';
+    return;
+  }
+
+  $('#btn-detect-stages').disabled = true;
+  $('#detect-hint').textContent = 'Scanning output folder\u2026';
+
+  try {
+    const results = await window.iss.detectPipelineStages({ sessionId });
+
+    // Apply canRun / outputExists to each checkbox
+    for (const r of results) {
+      const cb = $(`.stage-checkbox[data-stage-id="${r.id}"]`);
+      const badge = $(`.stage-check-badge[data-stage-id="${r.id}"]`);
+      if (!cb) continue;
+
+      cb.disabled = !r.canRun;
+      cb.checked  = r.canRun;   // check if runnable, uncheck if prereq missing
+
+      if (!r.canRun) {
+        badge.textContent = 'prereq missing';
+        badge.className = 'stage-check-badge badge-disabled';
+      } else if (r.outputExists) {
+        badge.textContent = 'output exists — will re-run';
+        badge.className = 'stage-check-badge badge-warn';
+      } else {
+        badge.textContent = '';
+        badge.className = 'stage-check-badge';
+      }
+    }
+
+    const runnable = results.filter((r) => r.canRun).length;
+    $('#detect-hint').textContent =
+      `${runnable} of ${results.length} stages can run. Uncheck any you want to skip.`;
+  } catch (err) {
+    $('#detect-hint').textContent = 'Detection failed: ' + err.message;
+  } finally {
+    $('#btn-detect-stages').disabled = false;
+  }
+}
+
 function bindRun() {
   buildStagePanel();
+  buildStageChecklist();
 
   $('#run-participant').addEventListener('change', refreshRunSessions);
+  $('#run-session').addEventListener('change', () => {
+    // Reset badges and hint when session changes
+    $$('.stage-check-badge').forEach((b) => { b.textContent = ''; b.className = 'stage-check-badge'; });
+    $$('.stage-checkbox').forEach((cb) => { cb.disabled = false; cb.checked = true; });
+    $('#detect-hint').textContent = 'Select a session, then click Detect to auto-select runnable stages.';
+  });
+
+  $('#btn-detect-stages').addEventListener('click', detectRunnableStages);
   $('#run-start').addEventListener('click', runPipeline);
   $('#run-cancel').addEventListener('click', () => window.iss.cancelPipeline());
 
@@ -472,19 +545,40 @@ async function refreshRunSessions() {
     opt.textContent = `${s.audioFilename} \u00b7 ${new Date(s.recordedAt).toLocaleString()} \u00b7 ${s.pipelineStatus}`;
     sel.appendChild(opt);
   }
+  // Trigger session-change reset
+  sel.dispatchEvent(new Event('change'));
 }
 
 async function runPipeline() {
   const sessionId = $('#run-session').value;
   if (!sessionId) { $('#run-status').textContent = 'Pick a session first.'; return; }
+
+  // Collect checked stage IDs
+  const selectedStages = $$('.stage-checkbox')
+    .filter((cb) => cb.checked && !cb.disabled)
+    .map((cb) => cb.dataset.stageId);
+
+  if (selectedStages.length === 0) {
+    $('#run-status').textContent = 'Check at least one stage to run.';
+    return;
+  }
+
   $('#run-log').textContent = '';
   $('#run-status').textContent = 'Starting\u2026';
   $('#run-start').disabled  = true;
   $('#run-cancel').disabled = false;
   $('#stage-panel').hidden  = false;
   resetStagePanel();
+
+  // Grey out stages not being run in the progress panel
+  $$('.stage-item').forEach((li) => {
+    if (!selectedStages.includes(li.dataset.stageId)) {
+      li.classList.add('skipped');
+    }
+  });
+
   try {
-    const r = await window.iss.runPipeline({ sessionId });
+    const r = await window.iss.runPipeline({ sessionId, stages: selectedStages });
     $('#run-status').textContent = r.ok
       ? 'Pipeline finished successfully.'
       : `Pipeline exited with code ${r.exitCode ?? '?'}.`;

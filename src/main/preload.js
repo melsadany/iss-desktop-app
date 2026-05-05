@@ -22,9 +22,10 @@ contextBridge.exposeInMainWorld('iss', {
   pullDockerImage:       ()           => ipcRenderer.invoke('docker:pull'),
 
   // pipeline
-  runPipeline:    (data)              => ipcRenderer.invoke('pipeline:run', data),
-  cancelPipeline: ()                  => ipcRenderer.invoke('pipeline:cancel'),
-  pipelineStages: ()                  => ipcRenderer.invoke('pipeline:stages'),
+  runPipeline:           (data)       => ipcRenderer.invoke('pipeline:run', data),
+  cancelPipeline:        ()           => ipcRenderer.invoke('pipeline:cancel'),
+  pipelineStages:        ()           => ipcRenderer.invoke('pipeline:stages'),
+  detectPipelineStages:  (data)       => ipcRenderer.invoke('pipeline:detect-stages', data),
 
   // results
   listResults: (pid)                  => ipcRenderer.invoke('results:list', pid),
