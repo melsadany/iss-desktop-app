@@ -30,42 +30,34 @@ const DOCKER_IMAGE = 'melsadany/iowa_speech_sample:latest';
 const ZENODO_URL   = 'https://zenodo.org/records/18675411/files/reference_data.zip?download=1';
 
 // ---------- pipeline stages ----------
-// stageArg: the value passed to --stage inside the container (matches pipeline.sh).
-// outputCheck: relative path inside the participant output dir checked for output.
-//   The pipeline writes into participant-namespaced subdirs, so we check
-//   <outputDir>/<outputCheck>/<participantId>/ rather than <outputDir>/<outputCheck>/.
 const PIPELINE_STAGES = [
   {
     id:          'stage1',
     label:       'Audio preprocessing',
     stageArg:    '1',
-    outputCheck: 'cropped_audio',   // written: cropped_audio/<participantId>/
+    outputCheck: 'cropped_audio',
   },
   {
     id:          'stage2',
     label:       'Transcription',
     stageArg:    '2',
-    outputCheck: 'transcriptions',  // written: transcriptions/<participantId>/
+    outputCheck: 'transcriptions',
   },
   {
     id:          'stage3',
     label:       'Transcription cleanup',
     stageArg:    '3',
-    outputCheck: 'review_files',    // written: review_files/<participantId>_cleaned_transcription.tsv
+    outputCheck: 'review_files',
   },
   {
     id:          'stage4',
     label:       'Feature extraction',
     stageArg:    '4',
-    outputCheck: 'features',        // written: features/<participantId>_per_participant.csv
+    outputCheck: 'features',
   },
 ];
 
-// Returns true if the stage output dir/prefix for this participant is non-empty.
-// Checks <outputDir>/<check>/<participantId>/ first; falls back to any file
-// under <outputDir>/<check>/ that starts with participantId (for flat-file outputs).
 async function stageOutputExists(outputDir, check, participantId) {
-  // Primary check: participant-namespaced subdir (stages 1, 2)
   const subDir = path.join(outputDir, check, participantId);
   try {
     const entries = await fsp.readdir(subDir);
@@ -73,9 +65,6 @@ async function stageOutputExists(outputDir, check, participantId) {
   } catch {
     // subdir doesn't exist — try flat-file fallback
   }
-
-  // Fallback: any file in <outputDir>/<check>/ whose name starts with participantId
-  // (covers review_files and features which write flat files named <ID>_*.tsv/.csv)
   const flatDir = path.join(outputDir, check);
   try {
     const entries = await fsp.readdir(flatDir);
@@ -147,7 +136,6 @@ function createWindow() {
     }
   });
 
-  // Custom menu (minimal)
   const template = [
     {
       label: 'File',
@@ -192,12 +180,10 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  // Ensure folders exist
   await fsp.mkdir(PARTICIPANTS_D(), { recursive: true });
   await fsp.mkdir(REF_DATA_DIR(),   { recursive: true });
   await fsp.mkdir(CONFIG_DIR(),     { recursive: true });
 
-  // Copy bundled task_template.yaml into userData if missing
   const bundledConfig = path.join(process.resourcesPath || path.join(__dirname, '..', '..', 'resources'), 'task_template.yaml');
   const userConfig    = path.join(CONFIG_DIR(), 'task_template.yaml');
   if (!fs.existsSync(userConfig) && fs.existsSync(bundledConfig)) {
@@ -206,7 +192,6 @@ app.whenReady().then(async () => {
 
   createWindow();
 
-  // Optional: non-blocking freshness check
   exec(`docker pull ${DOCKER_IMAGE}`, () => {
     mainWin?.webContents.send('docker:pull-log', '[startup] Image freshness check complete.\n');
   });
@@ -408,7 +393,7 @@ ipcMain.handle('reference:download', async (event, { url } = {}) => {
   await new Promise((resolve, reject) => {
     const unzipCmd = process.platform === 'win32'
       ? `powershell -Command "Expand-Archive -Force -Path '${tmp}' -DestinationPath '${REF_DATA_DIR()}'"`
-      : `unzip -o "${tmp}" -d "${REF_DATA_DIR()}"`;
+      : `unzip -o "${tmp}" -d "${REF_DATA_DIR()}"` ;
     exec(unzipCmd, (err, stdout, stderr) => {
       if (err) return reject(new Error(`Unzip failed: ${stderr || err.message}`));
       resolve();
@@ -495,12 +480,17 @@ ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
 });
 
 // ---------- IPC: pipeline run ----------
-let runningProc = null;
+// runningContainerId tracks the Docker container name so we can `docker kill` it
+let runningProc        = null;
+let runningContainerId = null;
 
-function buildDockerBaseArgs(inputDir, outputDir) {
+function buildDockerBaseArgs(inputDir, outputDir, containerName) {
   const args = [
     'run', '--rm',
+    '--name', containerName,
     '--memory=48g', '-e', 'R_MAX_SIZE=48GB',
+    // PWE fix: explicitly set the pwesuite python path inside the container
+    '-e', 'PWESUITE_PYTHON=/opt/conda/envs/pwesuite_env/bin/python',
     '-v', `${inputDir}:/input`,
     '-v', `${outputDir}:/app/output`
   ];
@@ -524,13 +514,11 @@ function runStage(dockerArgs, onLog) {
     runningProc = spawn('docker', dockerArgs);
     runningProc.stdout.on('data', (d) => onLog(d.toString()));
     runningProc.stderr.on('data', (d) => onLog(d.toString()));
-    runningProc.on('error', (err) => { runningProc = null; reject(err); });
-    runningProc.on('close', (code) => { runningProc = null; resolve(code); });
+    runningProc.on('error', (err) => { runningProc = null; runningContainerId = null; reject(err); });
+    runningProc.on('close', (code) => { runningProc = null; runningContainerId = null; resolve(code); });
   });
 }
 
-// pipeline:run accepts optional `stages` (array of stage IDs) and
-// optional `whisperModel` (string, applied to stage2 only).
 ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) => {
   if (runningProc) throw new Error('A pipeline run is already in progress.');
 
@@ -597,12 +585,15 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
   let lastExitCode = 0;
 
   for (const stage of stagesToRun) {
+    // Unique container name per stage so we can kill it by name
+    const containerName = `iss_${participantId}_${stage.id}_${Date.now()}`;
+    runningContainerId = containerName;
+
     sendStage(stage.id, 'running');
     sendLog(`\n--- Stage: ${stage.label} ---\n`);
 
-    const baseArgs  = buildDockerBaseArgs(inputDir, outputDir);
+    const baseArgs  = buildDockerBaseArgs(inputDir, outputDir, containerName);
 
-    // Build post-image args: positional args then optional flags
     const imageArgs = [
       participantId,
       audioInContainer,
@@ -610,7 +601,6 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
       '--stage', stage.stageArg
     ];
 
-    // Append --whisper-model only for the transcription stage
     if (stage.id === 'stage2' && whisperModel && whisperModel !== 'small') {
       imageArgs.push('--whisper-model', whisperModel);
     }
@@ -632,8 +622,10 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
     lastExitCode = exitCode;
 
     if (exitCode !== 0) {
-      sendLog(`\n[stage failed: exit ${exitCode}]\n`);
-      sendStage(stage.id, 'error');
+      // Check if cancelled (exit code 137 = SIGKILL, 130 = SIGINT)
+      const cancelled = exitCode === 137 || exitCode === 130;
+      sendLog(`\n[stage ${cancelled ? 'cancelled' : 'failed'}: exit ${exitCode}]\n`);
+      sendStage(stage.id, cancelled ? 'cancelled' : 'error');
       overallOk = false;
       break;
     }
@@ -641,6 +633,7 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
     sendStage(stage.id, 'completed');
   }
 
+  runningContainerId = null;
   sendLog(`\n[pipeline ${overallOk ? 'completed' : 'failed'}: exit ${lastExitCode}]\n`);
 
   const db2 = await loadDB();
@@ -654,15 +647,58 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
   return { ok: overallOk, exitCode: lastExitCode };
 });
 
+// Cancel: kill the Docker container by name, then the host process
 ipcMain.handle('pipeline:cancel', () => {
+  if (runningContainerId) {
+    exec(`docker kill ${runningContainerId}`, () => {});
+  }
   if (runningProc) {
-    runningProc.kill('SIGINT');
+    runningProc.kill('SIGTERM');
     return true;
   }
   return false;
 });
 
 ipcMain.handle('pipeline:stages', () => PIPELINE_STAGES);
+
+// ---------- IPC: transcription review ----------
+// Returns the cleaned transcription TSV for a participant as parsed rows,
+// plus the file path so the renderer can save edits back.
+ipcMain.handle('review:load', async (_e, participantId) => {
+  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
+  let tsvPath = null;
+
+  // Look for <participantId>_cleaned_transcription.tsv (exact) or any TSV starting with id
+  const candidates = [
+    path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) { tsvPath = c; break; }
+  }
+  if (!tsvPath) {
+    // Fallback: first .tsv in review_files that starts with participantId
+    try {
+      const entries = await fsp.readdir(reviewDir);
+      const match = entries.find((f) => f.startsWith(participantId) && f.endsWith('.tsv'));
+      if (match) tsvPath = path.join(reviewDir, match);
+    } catch {}
+  }
+
+  if (!tsvPath) return { rows: null, filePath: null, error: 'No cleaned transcription file found. Run stage 3 first.' };
+
+  const raw = await fsp.readFile(tsvPath, 'utf8');
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const rows = lines.map((l) => l.split('\t'));
+  return { rows, filePath: tsvPath, error: null };
+});
+
+// Save edited rows back to the TSV file
+ipcMain.handle('review:save', async (_e, { filePath, rows }) => {
+  if (!filePath) throw new Error('No file path provided.');
+  const tsv = rows.map((r) => r.join('\t')).join('\n');
+  await fsp.writeFile(filePath, tsv, 'utf8');
+  return { ok: true };
+});
 
 // ---------- IPC: results ----------
 ipcMain.handle('results:list', async (_e, participantId) => {

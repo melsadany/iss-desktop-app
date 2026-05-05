@@ -31,6 +31,7 @@
         <button class="nav-item" data-view="participants">Participants</button>
         <button class="nav-item" data-view="record">Record</button>
         <button class="nav-item" data-view="run">Run pipeline</button>
+        <button class="nav-item" data-view="review">Review</button>
         <button class="nav-item" data-view="results">Results</button>
       </nav>
       <div class="sidebar-foot">
@@ -104,7 +105,6 @@
               <input id="np-label" placeholder="Display name" />
             </label>
 
-            <!-- Optional demographic fields -->
             <div class="field-group">
               <label>Age (years)
                 <input id="np-age" type="number" min="0" max="120" placeholder="e.g. 34" />
@@ -197,7 +197,6 @@
               <select id="run-session"></select>
             </label>
 
-            <!-- Stage selection -->
             <div class="stage-select" id="stage-select">
               <div class="stage-select-head">
                 <h4>Stages to run</h4>
@@ -208,7 +207,6 @@
               <p class="hint" id="detect-hint">Select a session, then click Detect to auto-select runnable stages.</p>
               <ul class="stage-checklist" id="stage-checklist"></ul>
 
-              <!-- Whisper model selector — visible only when Stage 2 is checked -->
               <div class="whisper-model-row" id="whisper-model-row" hidden>
                 <label class="whisper-model-label" for="whisper-model">
                   Whisper model
@@ -228,11 +226,10 @@
 
             <div class="actions">
               <button id="run-start" class="primary">Run selected stages</button>
-              <button id="run-cancel" disabled>Cancel</button>
+              <button id="run-cancel" disabled>Stop</button>
             </div>
             <p id="run-status" class="muted"></p>
 
-            <!-- Stage progress panel (shown during/after run) -->
             <div class="stage-panel" id="stage-panel" hidden>
               <h4>Progress</h4>
               <ul class="stage-list" id="stage-list"></ul>
@@ -242,6 +239,39 @@
           <div class="card grow">
             <h3>Live log</h3>
             <pre class="log tall" id="run-log"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- REVIEW -->
+      <section id="view-review" class="view">
+        <h1>Transcription review</h1>
+        <p class="lead">Review and edit the cleaned transcription produced by stage&nbsp;3 before running feature extraction.</p>
+        <div class="row">
+          <div class="card">
+            <h3>Participant</h3>
+            <label>Participant
+              <select id="rev-participant"></select>
+            </label>
+            <div class="actions">
+              <button id="rev-load" class="primary">Load transcription</button>
+              <button id="rev-save" disabled>Save changes</button>
+            </div>
+            <p id="rev-status" class="muted"></p>
+            <p class="hint">Click any cell to edit it. Changes are written back to the
+               <code>review_files/</code> TSV. Re-run stage&nbsp;4 after saving to update features.</p>
+          </div>
+
+          <div class="card grow">
+            <div class="res-header">
+              <h3 id="rev-filename">No file loaded</h3>
+            </div>
+            <div id="rev-table-wrap" hidden>
+              <div class="table-wrap">
+                <table class="table editable-table" id="rev-table"><thead></thead><tbody></tbody></table>
+              </div>
+            </div>
+            <p id="rev-empty" class="muted">Load a participant&rsquo;s transcription to begin.</p>
           </div>
         </div>
       </section>

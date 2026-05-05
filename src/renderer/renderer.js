@@ -61,7 +61,7 @@ $('#open-data-folder').addEventListener('click', async () => {
 let state = {
   paths: null,
   participants: [],
-  pipelineStages: [],           // populated on init from main process
+  pipelineStages: [],
   selectedRecParticipant: null,
   selectedRunParticipant: null,
   selectedRunSession: null,
@@ -70,7 +70,11 @@ let state = {
   audioContext: null,
   mediaRecorder: null,
   audioChunks: [],
-  taskVideoUrl: 'assets/task_video.mp4'
+  taskVideoUrl: 'assets/task_video.mp4',
+  // review tab state
+  reviewFilePath: null,
+  reviewRows: null,
+  reviewDirty: false
 };
 
 // ---------- bootstrap ----------
@@ -83,6 +87,7 @@ let state = {
   bindParticipants();
   bindRecord();
   bindRun();
+  bindReview();
   bindResults();
 })();
 
@@ -91,6 +96,7 @@ async function onViewChange(name) {
   if (name === 'participants') refreshParticipantsTable();
   if (name === 'record')       fillParticipantSelect('#rec-participant');
   if (name === 'run')          { fillParticipantSelect('#run-participant'); refreshRunSessions(); }
+  if (name === 'review')       { fillParticipantSelect('#rev-participant'); }
   if (name === 'results')      { fillParticipantSelect('#res-participant'); refreshResults(); }
 }
 
@@ -192,7 +198,6 @@ function bindParticipants() {
         educationYears: educationYears ? Number(educationYears) : null,
         handedness:    handedness    || null
       });
-      // clear form
       ['#np-id','#np-label','#np-notes','#np-age','#np-education'].forEach(s => $(s).value = '');
       $('#np-sex').value = '';
       $('#np-handedness').value = '';
@@ -408,7 +413,6 @@ async function convertToWav(blob) {
 // RUN
 // ====================================================================
 
-// Build the stage progress list (shown during/after a run)
 function buildStagePanel() {
   const list = $('#stage-list');
   list.innerHTML = '';
@@ -424,7 +428,6 @@ function buildStagePanel() {
   }
 }
 
-// Build the stage checklist (selection UI)
 function buildStageChecklist() {
   const ul = $('#stage-checklist');
   ul.innerHTML = '';
@@ -440,15 +443,13 @@ function buildStageChecklist() {
     ul.appendChild(li);
   }
 
-  // Wire up the whisper model row visibility on Stage 2 checkbox
   const stage2cb = $('.stage-checkbox[data-stage-id="stage2"]');
   if (stage2cb) {
     stage2cb.addEventListener('change', updateWhisperModelVisibility);
-    updateWhisperModelVisibility(); // set initial state
+    updateWhisperModelVisibility();
   }
 }
 
-// Show/hide the whisper model row based on whether stage2 is checked
 function updateWhisperModelVisibility() {
   const stage2cb = $('.stage-checkbox[data-stage-id="stage2"]');
   const row = $('#whisper-model-row');
@@ -457,7 +458,6 @@ function updateWhisperModelVisibility() {
   row.hidden = !visible;
 }
 
-// Show/hide the RAM warning based on selected whisper model
 function updateWhisperRamWarn() {
   const sel  = $('#whisper-model');
   const warn = $('#whisper-ram-warn');
@@ -477,11 +477,10 @@ function updateStageUI(stageId, status) {
   if (!li) return;
   li.className = `stage-item ${status}`;
   const badge = li.querySelector('.stage-badge');
-  const labels = { running: 'running', completed: 'done', error: 'error' };
+  const labels = { running: 'running', completed: 'done', error: 'error', cancelled: 'cancelled' };
   badge.textContent = labels[status] || '';
 }
 
-// Call pipeline:detect-stages and apply results to the checklist
 async function detectRunnableStages() {
   const sessionId = $('#run-session').value;
   if (!sessionId) {
@@ -495,7 +494,6 @@ async function detectRunnableStages() {
   try {
     const results = await window.iss.detectPipelineStages({ sessionId });
 
-    // Apply canRun / outputExists to each checkbox
     for (const r of results) {
       const cb = $(`.stage-checkbox[data-stage-id="${r.id}"]`);
       const badge = $(`.stage-check-badge[data-stage-id="${r.id}"]`);
@@ -516,7 +514,6 @@ async function detectRunnableStages() {
       }
     }
 
-    // Re-evaluate whisper row after detect may have changed stage2 state
     updateWhisperModelVisibility();
 
     const runnable = results.filter((r) => r.canRun).length;
@@ -535,7 +532,6 @@ function bindRun() {
 
   $('#run-participant').addEventListener('change', refreshRunSessions);
   $('#run-session').addEventListener('change', () => {
-    // Reset badges, checkboxes, whisper selector, and hint when session changes
     $$('.stage-check-badge').forEach((b) => { b.textContent = ''; b.className = 'stage-check-badge'; });
     $$('.stage-checkbox').forEach((cb) => { cb.disabled = false; cb.checked = true; });
     $('#whisper-model').value = 'small';
@@ -544,12 +540,16 @@ function bindRun() {
     $('#detect-hint').textContent = 'Select a session, then click Detect to auto-select runnable stages.';
   });
 
-  // Whisper model dropdown: show/hide RAM warning
   $('#whisper-model').addEventListener('change', updateWhisperRamWarn);
-
   $('#btn-detect-stages').addEventListener('click', detectRunnableStages);
   $('#run-start').addEventListener('click', runPipeline);
-  $('#run-cancel').addEventListener('click', () => window.iss.cancelPipeline());
+
+  // Stop button: cancel the running pipeline (kills Docker container)
+  $('#run-cancel').addEventListener('click', async () => {
+    $('#run-cancel').disabled = true;
+    $('#run-status').textContent = 'Stopping\u2026';
+    await window.iss.cancelPipeline();
+  });
 
   window.iss.onPipelineLog(({ line }) => {
     const log = $('#run-log');
@@ -578,7 +578,6 @@ async function refreshRunSessions() {
     opt.textContent = `${s.audioFilename} \u00b7 ${new Date(s.recordedAt).toLocaleString()} \u00b7 ${s.pipelineStatus}`;
     sel.appendChild(opt);
   }
-  // Trigger session-change reset
   sel.dispatchEvent(new Event('change'));
 }
 
@@ -586,7 +585,6 @@ async function runPipeline() {
   const sessionId = $('#run-session').value;
   if (!sessionId) { $('#run-status').textContent = 'Pick a session first.'; return; }
 
-  // Collect checked stage IDs
   const selectedStages = $$('.stage-checkbox')
     .filter((cb) => cb.checked && !cb.disabled)
     .map((cb) => cb.dataset.stageId);
@@ -596,7 +594,6 @@ async function runPipeline() {
     return;
   }
 
-  // Read whisper model only if stage2 is in the selected set
   const whisperModel = selectedStages.includes('stage2')
     ? ($('#whisper-model').value || 'small')
     : null;
@@ -608,7 +605,6 @@ async function runPipeline() {
   $('#stage-panel').hidden  = false;
   resetStagePanel();
 
-  // Grey out stages not being run in the progress panel
   $$('.stage-item').forEach((li) => {
     if (!selectedStages.includes(li.dataset.stageId)) {
       li.classList.add('skipped');
@@ -625,6 +621,121 @@ async function runPipeline() {
   } finally {
     $('#run-start').disabled  = false;
     $('#run-cancel').disabled = true;
+  }
+}
+
+// ====================================================================
+// REVIEW
+// ====================================================================
+function bindReview() {
+  $('#rev-load').addEventListener('click', loadReview);
+  $('#rev-save').addEventListener('click', saveReview);
+}
+
+async function loadReview() {
+  const pid = $('#rev-participant').value;
+  if (!pid) { $('#rev-status').textContent = 'Select a participant first.'; return; }
+
+  $('#rev-load').disabled = true;
+  $('#rev-status').textContent = 'Loading\u2026';
+
+  try {
+    const { rows, filePath, error } = await window.iss.loadReview(pid);
+
+    if (error) {
+      $('#rev-status').textContent = error;
+      $('#rev-table-wrap').hidden = true;
+      $('#rev-empty').hidden = false;
+      $('#rev-save').disabled = true;
+      state.reviewFilePath = null;
+      state.reviewRows = null;
+      return;
+    }
+
+    state.reviewFilePath = filePath;
+    state.reviewRows = rows.map((r) => [...r]); // deep copy
+    state.reviewDirty = false;
+
+    $('#rev-filename').textContent = filePath.split(/[\\/]/).pop();
+    renderReviewTable(rows);
+    $('#rev-table-wrap').hidden = false;
+    $('#rev-empty').hidden = true;
+    $('#rev-save').disabled = false;
+    $('#rev-status').textContent = `Loaded ${rows.length - 1} rows. Click any cell to edit.`;
+  } catch (err) {
+    $('#rev-status').textContent = 'Error: ' + err.message;
+  } finally {
+    $('#rev-load').disabled = false;
+  }
+}
+
+function renderReviewTable(rows) {
+  const thead = $('#rev-table thead');
+  const tbody = $('#rev-table tbody');
+  thead.innerHTML = '';
+  tbody.innerHTML = '';
+  if (!rows.length) return;
+
+  // Header row
+  const htr = document.createElement('tr');
+  rows[0].forEach((h) => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    htr.appendChild(th);
+  });
+  thead.appendChild(htr);
+
+  // Data rows — each cell is contenteditable
+  rows.slice(1).forEach((row, rowIdx) => {
+    const tr = document.createElement('tr');
+    row.forEach((cell, colIdx) => {
+      const td = document.createElement('td');
+      td.textContent = cell;
+      td.contentEditable = 'true';
+      td.dataset.row = rowIdx + 1; // +1 because header is row 0
+      td.dataset.col = colIdx;
+      td.addEventListener('input', () => {
+        // Sync edit back to state.reviewRows
+        state.reviewRows[rowIdx + 1][colIdx] = td.textContent;
+        state.reviewDirty = true;
+        $('#rev-save').classList.add('unsaved');
+      });
+      td.addEventListener('keydown', (e) => {
+        // Tab moves to next cell; Enter moves to next row same column
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const next = tbody.querySelector(
+            `td[data-row="${rowIdx + 1}"][data-col="${colIdx + 1}"]`
+          );
+          if (next) next.focus();
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const next = tbody.querySelector(
+            `td[data-row="${rowIdx + 2}"][data-col="${colIdx}"]`
+          );
+          if (next) next.focus();
+        }
+      });
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+async function saveReview() {
+  if (!state.reviewFilePath || !state.reviewRows) return;
+  $('#rev-save').disabled = true;
+  $('#rev-status').textContent = 'Saving\u2026';
+  try {
+    await window.iss.saveReview({ filePath: state.reviewFilePath, rows: state.reviewRows });
+    state.reviewDirty = false;
+    $('#rev-save').classList.remove('unsaved');
+    $('#rev-status').textContent = 'Saved.';
+  } catch (err) {
+    $('#rev-status').textContent = 'Save failed: ' + err.message;
+  } finally {
+    $('#rev-save').disabled = false;
   }
 }
 

@@ -27,6 +27,10 @@ contextBridge.exposeInMainWorld('iss', {
   pipelineStages:        ()           => ipcRenderer.invoke('pipeline:stages'),
   detectPipelineStages:  (data)       => ipcRenderer.invoke('pipeline:detect-stages', data),
 
+  // transcription review
+  loadReview:  (participantId)        => ipcRenderer.invoke('review:load', participantId),
+  saveReview:  (data)                 => ipcRenderer.invoke('review:save', data),
+
   // results
   listResults: (pid)                  => ipcRenderer.invoke('results:list', pid),
   readCsv:     (path)                 => ipcRenderer.invoke('results:read-csv', path),
