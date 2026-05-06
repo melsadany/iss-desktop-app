@@ -374,7 +374,79 @@ progress::-moz-progress-bar      { background: var(--primary); }
 }
 .table th { color: var(--text-dim); font-weight: 500; background: var(--panel-2); }
 .table tbody tr:hover { background: var(--panel-2); }
-.table-wrap { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+
+/* table-wrap: scrollable container with sticky header */
+.table-wrap {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.table-wrap .table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-2);
+  /* re-draw the bottom border on top of scrolled content */
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* ---------- review table specifics ---------- */
+
+/* Dimmed row = reviewer flagged as drop */
+.rev-row-dropped td {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+/* Active row (audio playback position) */
+.rev-row-active {
+  background: rgba(71,130,180,.12) !important;
+}
+/* Centre checkboxes in their cell */
+.rev-check-cell {
+  text-align: center;
+  width: 54px;
+}
+
+/* Save button pulses when there are unsaved edits */
+@keyframes unsaved-pulse {
+  0%, 100% { border-color: var(--accent); }
+  50%       { border-color: transparent; }
+}
+button.unsaved {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: unsaved-pulse 1.6s ease-in-out infinite;
+}
+
+/* ---------- review audio playlist ---------- */
+.rev-clip-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.rev-playlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.rev-clip-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.rev-clip-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.rev-clip-btn.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: white;
+}
+.rev-clip-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ---------- file list ---------- */
 .filelist { list-style: none; padding: 0; margin: 12px 0 0; }
@@ -426,3 +498,74 @@ code {
   border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--slate); }
+
+/* ---------- stage checklist ---------- */
+.stage-checklist {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stage-check-item {
+  display: flex;
+  align-items: center;
+}
+
+.stage-check-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+  padding: 4px 0;
+}
+
+.stage-check-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.badge-warn {
+  background: rgba(243,177,153,.22);
+  color: var(--bad);
+  border-color: rgba(243,177,153,.5);
+}
+
+.badge-disabled {
+  background: var(--panel-2);
+  color: var(--text-faint);
+  border-color: var(--border);
+}
+
+.stage-select-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.btn-small {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 6px;
+}
+
+.whisper-model-row { margin-top: 8px; }
+.whisper-model-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.whisper-model-label select { width: auto; }
+.hint.warn { color: var(--bad); }

@@ -76,12 +76,15 @@ let state = {
   reviewRows: null,
   reviewDirty: false,
   // review audio playlist
-  // Each entry: { stem, fileUrl, rows: [rowIdx, ...] }
   reviewPlaylist: [],
   reviewPlaylistIdx: -1,
-  // column index cache
+  // column index cache (indices into the FULL underlying row, not the visible columns)
   revCols: null,
 };
+
+// Columns shown in the review table, in display order.
+// 'response' is editable; 'drop' and 'comment' become checkboxes.
+const REV_VISIBLE_COLS = ['task', 'prompt', 'trial', 'response', 'confidence', 'drop', 'comment'];
 
 // ---------- bootstrap ----------
 (async function init() {
@@ -512,6 +515,10 @@ async function detectRunnableStages() {
       if (!r.canRun) {
         badge.textContent = 'prereq missing';
         badge.className = 'stage-check-badge badge-disabled';
+      } else if (r.reviewedTsvPresent) {
+        // Stage 3 special case: reviewed TSV exists — strongly suggest re-running
+        badge.textContent = 'reviewed TSV found \u2014 re-run to apply';
+        badge.className = 'stage-check-badge badge-warn';
       } else if (r.outputExists) {
         badge.textContent = 'output exists \u2014 will re-run';
         badge.className = 'stage-check-badge badge-warn';
@@ -634,9 +641,6 @@ async function runPipeline() {
 // REVIEW
 // ====================================================================
 
-// TSV column names we care about. Resolved once per load.
-const REV_EXPECTED_COLS = ['audio_file', 'start', 'end', 'response', 'drop', 'comment'];
-
 function bindReview() {
   $('#rev-load').addEventListener('click', loadReview);
   $('#rev-save').addEventListener('click', saveReview);
@@ -654,10 +658,8 @@ function bindReview() {
     const startCol = state.revCols.start;
     const endCol   = state.revCols.end;
 
-    // Clear all highlights first
     $$('#rev-table tbody tr.rev-row-active').forEach((r) => r.classList.remove('rev-row-active'));
 
-    // Find which row's window contains currentTime
     for (const rowIdx of entry.rowIdxs) {
       const row = state.reviewRows[rowIdx];
       if (!row) continue;
@@ -682,7 +684,6 @@ async function loadReview() {
   $('#rev-load').disabled = true;
   $('#rev-status').textContent = 'Loading\u2026';
 
-  // Reset audio player
   const audio = $('#rev-audio');
   audio.pause();
   audio.src = '';
@@ -706,40 +707,33 @@ async function loadReview() {
       return;
     }
 
-    // ---- resolve column indices from header row ----
+    // ---- resolve column indices from header row (into the FULL row array) ----
     const header = rows[0];
     const colIdx = (name) => header.indexOf(name);
 
     let dropCol    = colIdx('drop');
     let commentCol = colIdx('comment');
 
-    // If drop/comment columns don't exist yet, append them
-    const needDrop    = dropCol    === -1;
-    const needComment = commentCol === -1;
+    const workRows = rows.map((r) => [...r]);
 
-    const workRows = rows.map((r) => [...r]); // deep copy
-
-    if (needDrop) {
+    // Append drop/comment columns if they don't exist yet
+    if (dropCol === -1) {
       workRows[0].push('drop');
       dropCol = workRows[0].length - 1;
       for (let i = 1; i < workRows.length; i++) workRows[i].push('FALSE');
     }
-    if (needComment) {
+    if (commentCol === -1) {
       workRows[0].push('comment');
       commentCol = workRows[0].length - 1;
       for (let i = 1; i < workRows.length; i++) workRows[i].push('FALSE');
     }
 
-    const audioFileCol = colIdx('audio_file');
-    const startCol     = colIdx('start');
-    const endCol       = colIdx('end');
-    const responseCol  = colIdx('response');
-
+    // Cache ALL column indices (used for audio sync and write-back)
     state.revCols = {
-      audioFile: audioFileCol,
-      start:     startCol,
-      end:       endCol,
-      response:  responseCol,
+      audioFile: colIdx('audio_file'),
+      start:     colIdx('start'),
+      end:       colIdx('end'),
+      response:  colIdx('response'),
       drop:      dropCol,
       comment:   commentCol,
     };
@@ -749,16 +743,14 @@ async function loadReview() {
     state.reviewDirty    = false;
 
     // ---- build audio playlist ----
-    // audioFiles is [{ stem, fileUrl }, ...] ordered by filename
-    // Map each unique audio_file stem from TSV → fileUrl
     const stemToUrl = {};
     for (const af of audioFiles) stemToUrl[af.stem] = af.fileUrl;
 
-    // Walk data rows in order, group consecutive rows by audio_file
     const playlist = [];
-    const seenStems = new Map(); // stem -> playlist index
+    const seenStems = new Map();
+    const audioFileColIdx = state.revCols.audioFile;
     for (let i = 1; i < workRows.length; i++) {
-      const stem = workRows[i][audioFileCol];
+      const stem = workRows[i][audioFileColIdx];
       if (!stem || stem === 'NA') continue;
       if (!seenStems.has(stem)) {
         seenStems.set(stem, playlist.length);
@@ -768,7 +760,7 @@ async function loadReview() {
     }
     state.reviewPlaylist = playlist;
 
-    // ---- render table ----
+    // ---- render table (filtered columns) ----
     $('#rev-filename').textContent = filePath.split(/[\\/]/).pop();
     renderReviewTable(workRows);
     $('#rev-table-wrap').hidden = false;
@@ -777,7 +769,6 @@ async function loadReview() {
     $('#rev-status').textContent =
       `Loaded ${workRows.length - 1} rows across ${playlist.length} audio clip(s).`;
 
-    // ---- build playlist UI and load first clip ----
     if (playlist.length > 0) {
       buildRevPlaylistUI();
       revLoadClip(0);
@@ -798,7 +789,6 @@ function buildRevPlaylistUI() {
     const btn = document.createElement('button');
     btn.className = 'rev-clip-btn';
     btn.dataset.clipIdx = idx;
-    // Show a readable label: strip participantId prefix and underscores
     btn.textContent = entry.stem.replace(/^[^_]+_/, '').replace(/_/g, ' ');
     btn.title = entry.stem;
     if (!entry.fileUrl) {
@@ -810,7 +800,6 @@ function buildRevPlaylistUI() {
   });
 }
 
-// Load a specific clip by playlist index and start playing
 function revLoadClip(idx) {
   if (idx < 0 || idx >= state.reviewPlaylist.length) return;
   const entry = state.reviewPlaylist[idx];
@@ -822,16 +811,13 @@ function revLoadClip(idx) {
   audio.src = entry.fileUrl;
   audio.load();
 
-  // Update label
   $('#rev-clip-label').textContent =
     `Clip ${idx + 1} / ${state.reviewPlaylist.length}: ${entry.stem.replace(/^[^_]+_/, '').replace(/_/g, ' ')}`;
 
-  // Highlight active playlist button
   $$('#rev-playlist .rev-clip-btn').forEach((b) => b.classList.remove('active'));
   const activeBtn = $(`#rev-playlist .rev-clip-btn[data-clip-idx="${idx}"]`);
   if (activeBtn) activeBtn.classList.add('active');
 
-  // Highlight the first row of this clip in the table
   $$('#rev-table tbody tr.rev-row-active').forEach((r) => r.classList.remove('rev-row-active'));
   const firstRowIdx = entry.rowIdxs[0];
   if (firstRowIdx != null) {
@@ -840,7 +826,6 @@ function revLoadClip(idx) {
   }
 }
 
-// Advance to next or previous clip
 function revPlaylistAdvance(delta) {
   const next = state.reviewPlaylistIdx + delta;
   if (next >= 0 && next < state.reviewPlaylist.length) {
@@ -849,6 +834,11 @@ function revPlaylistAdvance(delta) {
   }
 }
 
+/**
+ * Render the review table showing only REV_VISIBLE_COLS.
+ * All write-back operations use indices into the full underlying row
+ * (state.revCols), not the visible column positions.
+ */
 function renderReviewTable(rows) {
   const thead = $('#rev-table thead');
   const tbody = $('#rev-table tbody');
@@ -856,77 +846,86 @@ function renderReviewTable(rows) {
   tbody.innerHTML = '';
   if (!rows.length) return;
 
-  const cols = state.revCols || {};
+  const fullHeader = rows[0];  // all columns in the TSV
+  const cols = state.revCols;
+
+  // Build the list of visible columns: name → full-row index
+  // Only include columns that actually exist in the TSV.
+  const visibleCols = REV_VISIBLE_COLS
+    .map((name) => ({ name, fullIdx: fullHeader.indexOf(name) }))
+    .filter(({ fullIdx }) => fullIdx !== -1);
 
   // Header row
   const htr = document.createElement('tr');
-  rows[0].forEach((h) => {
+  visibleCols.forEach(({ name }) => {
     const th = document.createElement('th');
-    th.textContent = h;
+    th.textContent = name;
     htr.appendChild(th);
   });
   thead.appendChild(htr);
 
   // Data rows
   rows.slice(1).forEach((row, zeroIdx) => {
-    const rowIdx = zeroIdx + 1; // index into state.reviewRows (0 = header)
+    const rowIdx = zeroIdx + 1;
     const tr = document.createElement('tr');
     tr.dataset.rowIdx = rowIdx;
 
-    // Click anywhere on the row → jump to that clip+timestamp
+    // Click on row → seek audio to that word
     tr.addEventListener('click', (e) => {
-      // Don't hijack clicks on editable cells or checkboxes
       if (e.target.contentEditable === 'true' || e.target.tagName === 'INPUT') return;
       revSeekToRow(rowIdx);
     });
 
-    row.forEach((cell, colIdx) => {
-      const td = document.createElement('td');
+    // Apply initial dropped styling
+    if (cols.drop !== undefined && row[cols.drop] === 'TRUE') {
+      tr.classList.add('rev-row-dropped');
+    }
 
-      if (colIdx === cols.drop || colIdx === cols.comment) {
-        // Checkbox cell
+    visibleCols.forEach(({ name, fullIdx }) => {
+      const td = document.createElement('td');
+      const cell = row[fullIdx];
+
+      if (name === 'drop' || name === 'comment') {
+        // Checkbox cell — writes back to the full-row index
         td.className = 'rev-check-cell';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = (cell === 'TRUE');
         cb.addEventListener('change', () => {
-          state.reviewRows[rowIdx][colIdx] = cb.checked ? 'TRUE' : 'FALSE';
+          state.reviewRows[rowIdx][fullIdx] = cb.checked ? 'TRUE' : 'FALSE';
           state.reviewDirty = true;
           $('#rev-save').classList.add('unsaved');
-          // Visually dim the row if dropped
-          if (colIdx === cols.drop) {
-            tr.classList.toggle('rev-row-dropped', cb.checked);
-          }
+          if (name === 'drop') tr.classList.toggle('rev-row-dropped', cb.checked);
         });
-        // Apply initial dropped styling
-        if (colIdx === cols.drop && cell === 'TRUE') tr.classList.add('rev-row-dropped');
         td.appendChild(cb);
-      } else if (colIdx === cols.response) {
-        // Editable text cell
+
+      } else if (name === 'response') {
+        // Editable text cell — writes back to the full-row index
         td.textContent = cell;
         td.contentEditable = 'true';
         td.dataset.row = rowIdx;
-        td.dataset.col = colIdx;
+        td.dataset.col = fullIdx;
         td.addEventListener('input', () => {
-          state.reviewRows[rowIdx][colIdx] = td.textContent;
+          state.reviewRows[rowIdx][fullIdx] = td.textContent;
           state.reviewDirty = true;
           $('#rev-save').classList.add('unsaved');
         });
         td.addEventListener('keydown', (e) => {
           if (e.key === 'Tab') {
             e.preventDefault();
-            const next = tbody.querySelector(`td[data-row="${rowIdx}"][data-col="${colIdx + 1}"]`);
+            const next = tbody.querySelector(`td[data-row="${rowIdx}"][data-col="${fullIdx + 1}"]`);
             if (next) next.focus();
           }
           if (e.key === 'Enter') {
             e.preventDefault();
-            const next = tbody.querySelector(`td[data-row="${rowIdx + 1}"][data-col="${colIdx}"]`);
+            const next = tbody.querySelector(`td[data-row="${rowIdx + 1}"][data-col="${fullIdx}"]`);
             if (next) next.focus();
           }
         });
+
       } else {
         // Read-only display cell
-        td.textContent = cell;
+        td.textContent = cell ?? '';
       }
 
       tr.appendChild(td);
@@ -936,8 +935,6 @@ function renderReviewTable(rows) {
   });
 }
 
-// Seek the audio player to the start time of a given TSV row,
-// switching clips if needed.
 function revSeekToRow(rowIdx) {
   if (!state.revCols || !state.reviewRows) return;
   const row = state.reviewRows[rowIdx];
@@ -947,21 +944,18 @@ function revSeekToRow(rowIdx) {
   const start = parseFloat(row[state.revCols.start]);
   if (!stem || isNaN(start)) return;
 
-  // Find this stem in the playlist
   const pIdx = state.reviewPlaylist.findIndex((e) => e.stem === stem);
   if (pIdx === -1) return;
 
   const audio = $('#rev-audio');
 
   if (pIdx !== state.reviewPlaylistIdx) {
-    // Different clip — load it, then seek after loadedmetadata
     revLoadClip(pIdx);
     audio.addEventListener('loadedmetadata', () => {
       audio.currentTime = start;
       audio.play();
     }, { once: true });
   } else {
-    // Same clip — just seek
     audio.currentTime = start;
     audio.play();
   }
@@ -975,7 +969,7 @@ async function saveReview() {
     await window.iss.saveReview({ filePath: state.reviewFilePath, rows: state.reviewRows });
     state.reviewDirty = false;
     $('#rev-save').classList.remove('unsaved');
-    $('#rev-status').textContent = 'Saved.';
+    $('#rev-status').textContent = 'Saved. Re-run stage\u00a03 in the Run pipeline tab to apply changes.';
   } catch (err) {
     $('#rev-status').textContent = 'Save failed: ' + err.message;
   } finally {
