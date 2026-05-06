@@ -18,6 +18,7 @@ const os = require('os');
 const { spawn, exec } = require('child_process');
 const { pipeline } = require('stream/promises');
 const https = require('https');
+const yaml = require('js-yaml');
 
 // ---------- paths ----------
 const USER_DATA      = () => app.getPath('userData');
@@ -25,6 +26,7 @@ const DB_PATH        = () => path.join(USER_DATA(), 'iss_db.json');
 const PARTICIPANTS_D = () => path.join(USER_DATA(), 'participants');
 const REF_DATA_DIR   = () => path.join(USER_DATA(), 'reference_data');
 const CONFIG_DIR     = () => path.join(USER_DATA(), 'config');
+const CONFIG_FILE    = () => path.join(CONFIG_DIR(), 'task_template.yaml');
 
 const DOCKER_IMAGE = 'melsadany/iowa_speech_sample:latest';
 const ZENODO_URL   = 'https://zenodo.org/records/18675411/files/reference_data.zip?download=1';
@@ -185,7 +187,7 @@ app.whenReady().then(async () => {
   await fsp.mkdir(CONFIG_DIR(),     { recursive: true });
 
   const bundledConfig = path.join(process.resourcesPath || path.join(__dirname, '..', '..', 'resources'), 'task_template.yaml');
-  const userConfig    = path.join(CONFIG_DIR(), 'task_template.yaml');
+  const userConfig    = CONFIG_FILE();
   if (!fs.existsSync(userConfig) && fs.existsSync(bundledConfig)) {
     await fsp.copyFile(bundledConfig, userConfig);
   }
@@ -211,7 +213,7 @@ ipcMain.handle('app:paths', () => ({
   participants: PARTICIPANTS_D(),
   referenceData: REF_DATA_DIR(),
   config: CONFIG_DIR(),
-  configFile: path.join(CONFIG_DIR(), 'task_template.yaml')
+  configFile: CONFIG_FILE()
 }));
 
 ipcMain.handle('app:open-path', (_e, p) => shell.openPath(p));
@@ -232,6 +234,40 @@ ipcMain.handle('system:check', async () => {
     referenceDataPresent: refExists,
     referenceDataPath: REF_DATA_DIR()
   };
+});
+
+// ---------- IPC: config read/write ----------
+ipcMain.handle('config:read', async () => {
+  try {
+    const raw = await fsp.readFile(CONFIG_FILE(), 'utf8');
+    const cfg = yaml.load(raw);
+    const thresholds = cfg?.transcription?.confidence_threshold ?? {
+      strict: 0.9,
+      review: 0.8,
+      auto:   0.0
+    };
+    return { ok: true, thresholds };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Writes only the three confidence_threshold values; leaves the rest of the YAML untouched.
+ipcMain.handle('config:write-confidence', async (_e, { strict, review, auto }) => {
+  try {
+    const raw = await fsp.readFile(CONFIG_FILE(), 'utf8');
+    const cfg = yaml.load(raw);
+    if (!cfg.transcription) cfg.transcription = {};
+    cfg.transcription.confidence_threshold = {
+      strict: parseFloat(strict),
+      review: parseFloat(review),
+      auto:   parseFloat(auto)
+    };
+    await fsp.writeFile(CONFIG_FILE(), yaml.dump(cfg, { lineWidth: -1 }), 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 // ---------- IPC: participants ----------
@@ -489,7 +525,6 @@ function buildDockerBaseArgs(inputDir, outputDir, containerName) {
     'run', '--rm',
     '--name', containerName,
     '--memory=48g', '-e', 'R_MAX_SIZE=48GB',
-    // PWE fix: explicitly set the pwesuite python path inside the container
     '-e', 'PWESUITE_PYTHON=/opt/conda/envs/pwesuite_env/bin/python',
     '-v', `${inputDir}:/input`,
     '-v', `${outputDir}:/app/output`
@@ -501,7 +536,7 @@ function buildDockerBaseArgs(inputDir, outputDir, containerName) {
     args.push('-v', `${mountSrc}:/app/reference_data`);
   }
 
-  const cfg = path.join(CONFIG_DIR(), 'task_template.yaml');
+  const cfg = CONFIG_FILE();
   if (fs.existsSync(cfg)) {
     args.push('-v', `${cfg}:/app/config/task_template.yaml:ro`);
   }
@@ -585,7 +620,6 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
   let lastExitCode = 0;
 
   for (const stage of stagesToRun) {
-    // Unique container name per stage so we can kill it by name
     const containerName = `iss_${participantId}_${stage.id}_${Date.now()}`;
     runningContainerId = containerName;
 
@@ -601,14 +635,18 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
       '--stage', stage.stageArg
     ];
 
-    if (stage.id === 'stage2' && whisperModel && whisperModel !== 'small') {
-      imageArgs.push('--whisper-model', whisperModel);
+    // ── Stage 2: whisper model override + full-audio transcription ──────────
+    if (stage.id === 'stage2') {
+      if (whisperModel && whisperModel !== 'small') {
+        imageArgs.push('--whisper-model', whisperModel);
+      }
+      // Pass the original uncut audio so 02_transcription.py can also
+      // transcribe the full recording for absolute-timestamp mapping.
+      imageArgs.push('--full_audio_file', audioInContainer);
+      sendLog('[info] Full-audio transcription enabled — will also produce <id>_full_audio_whisperX.tsv\n');
     }
 
-    // ── Stage 3: pass --reviewed_tsv if the user has already edited the file ──
-    // The reviewed TSV lives on the host at output/review_files/<id>_cleaned_transcription.tsv.
-    // We mount it read-only into the container at /app/review/<filename> and tell
-    // run_03_transcription_cleanup.R to use it instead of regenerating from scratch.
+    // ── Stage 3: pass --reviewed_tsv if review file already exists ──────────
     if (stage.id === 'stage3') {
       const reviewedTsvHost = path.join(
         outputDir, 'review_files', `${participantId}_cleaned_transcription.tsv`
@@ -638,7 +676,6 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
     lastExitCode = exitCode;
 
     if (exitCode !== 0) {
-      // Check if cancelled (exit code 137 = SIGKILL, 130 = SIGINT)
       const cancelled = exitCode === 137 || exitCode === 130;
       sendLog(`\n[stage ${cancelled ? 'cancelled' : 'failed'}: exit ${exitCode}]\n`);
       sendStage(stage.id, cancelled ? 'cancelled' : 'error');
@@ -678,13 +715,10 @@ ipcMain.handle('pipeline:cancel', () => {
 ipcMain.handle('pipeline:stages', () => PIPELINE_STAGES);
 
 // ---------- IPC: transcription review ----------
-// Returns the cleaned transcription TSV for a participant as parsed rows,
-// plus the file path so the renderer can save edits back.
 ipcMain.handle('review:load', async (_e, participantId) => {
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
   let tsvPath = null;
 
-  // Look for <participantId>_cleaned_transcription.tsv (exact) or any TSV starting with id
   const candidates = [
     path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`),
   ];
@@ -692,7 +726,6 @@ ipcMain.handle('review:load', async (_e, participantId) => {
     if (fs.existsSync(c)) { tsvPath = c; break; }
   }
   if (!tsvPath) {
-    // Fallback: first .tsv in review_files that starts with participantId
     try {
       const entries = await fsp.readdir(reviewDir);
       const match = entries.find((f) => f.startsWith(participantId) && f.endsWith('.tsv'));
@@ -708,7 +741,6 @@ ipcMain.handle('review:load', async (_e, participantId) => {
   return { rows, filePath: tsvPath, error: null };
 });
 
-// Save edited rows back to the TSV file
 ipcMain.handle('review:save', async (_e, { filePath, rows }) => {
   if (!filePath) throw new Error('No file path provided.');
   const tsv = rows.map((r) => r.join('\t')).join('\n');
@@ -716,15 +748,9 @@ ipcMain.handle('review:save', async (_e, { filePath, rows }) => {
   return { ok: true };
 });
 
-// ---------- IPC: review audio files ----------
-// Scans output/cropped_audio/<participantId>/ and returns an ordered list of
-// { stem, filePath, fileUrl } objects — one entry per unique audio_file stem
-// in the order they appear on disk (sorted by filename, which matches task order).
-// The renderer uses fileUrl (file:// URI) directly as <audio src>.
 ipcMain.handle('review:get-audio-files', async (_e, participantId) => {
   const AUDIO_EXTS = ['.wav', '.mp3', '.flac', '.ogg', '.m4a'];
 
-  // Cropped files may be in a participant subdirectory or directly in cropped_audio/
   const baseDir  = path.join(PARTICIPANTS_D(), participantId, 'output', 'cropped_audio');
   const subDir   = path.join(baseDir, participantId);
 
@@ -740,13 +766,13 @@ ipcMain.handle('review:get-audio-files', async (_e, participantId) => {
 
   const audioFiles = entries
     .filter((f) => AUDIO_EXTS.includes(path.extname(f).toLowerCase()))
-    .sort() // alphabetical = task order as produced by the pipeline
+    .sort()
     .map((f) => {
       const fullPath = path.join(searchDir, f);
       return {
-        stem:    path.basename(f, path.extname(f)),  // e.g. "SUB0001_task-CHECKBOX_trial-1"
+        stem:    path.basename(f, path.extname(f)),
         filePath: fullPath,
-        fileUrl:  `file://${fullPath.replace(/\\/g, '/')}` // Windows-safe
+        fileUrl:  `file://${fullPath.replace(/\\/g, '/')}`
       };
     });
 

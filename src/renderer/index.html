@@ -222,6 +222,34 @@
                   is allocated enough memory (Preferences &rarr; Resources &rarr; Memory) before running.
                 </p>
               </div>
+
+              <!-- ── Transcription settings ─────────────────────────────── -->
+              <details class="transcription-settings" id="transcription-settings">
+                <summary>Transcription settings</summary>
+
+                <div class="setting-row">
+                  <label for="conf-auto">
+                    Confidence threshold
+                    <span class="conf-value" id="conf-auto-value">0.00</span>
+                  </label>
+                  <input
+                    type="range"
+                    id="conf-auto"
+                    min="0" max="1" step="0.05"
+                    value="0"
+                    aria-label="Auto confidence threshold"
+                  />
+                  <p class="hint">
+                    Words whose transcription confidence falls below this value are flagged for
+                    review. <strong>Lower values (closer to 0)</strong> keep more words, including
+                    uncertain ones. <strong>Higher values (closer to 1)</strong> discard low-confidence
+                    words before cleanup — useful when audio quality is poor. Default is
+                    <code>0.0</code> (keep all words).
+                  </p>
+                  <span class="conf-saved" id="conf-saved" aria-live="polite"></span>
+                </div>
+              </details>
+              <!-- ─────────────────────────────────────────────────────── -->
             </div>
 
             <div class="actions">
@@ -263,15 +291,11 @@
                Changes are written back to the <code>review_files/</code> TSV.
                Re-run stage&nbsp;4 after saving to update features.</p>
 
-            <!-- Audio playlist: shown after loading -->
             <div id="rev-audio-wrap" hidden>
               <h4>Audio</h4>
-              <!-- current clip label -->
               <p id="rev-clip-label" class="muted rev-clip-label"></p>
-              <!-- native audio player -->
               <audio id="rev-audio" controls preload="metadata"
                      style="width:100%; margin-bottom: 0.5rem;"></audio>
-              <!-- playlist of clips -->
               <div id="rev-playlist" class="rev-playlist"></div>
             </div>
           </div>

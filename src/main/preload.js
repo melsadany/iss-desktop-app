@@ -27,6 +27,10 @@ contextBridge.exposeInMainWorld('iss', {
   pipelineStages:        ()           => ipcRenderer.invoke('pipeline:stages'),
   detectPipelineStages:  (data)       => ipcRenderer.invoke('pipeline:detect-stages', data),
 
+  // config
+  readConfig:          ()             => ipcRenderer.invoke('config:read'),
+  writeConfidence:     (data)         => ipcRenderer.invoke('config:write-confidence', data),
+
   // transcription review
   loadReview:      (participantId)    => ipcRenderer.invoke('review:load', participantId),
   saveReview:      (data)             => ipcRenderer.invoke('review:save', data),
