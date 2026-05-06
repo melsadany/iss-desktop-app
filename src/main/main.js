@@ -605,6 +605,22 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
       imageArgs.push('--whisper-model', whisperModel);
     }
 
+    // ── Stage 3: pass --reviewed_tsv if the user has already edited the file ──
+    // The reviewed TSV lives on the host at output/review_files/<id>_cleaned_transcription.tsv.
+    // We mount it read-only into the container at /app/review/<filename> and tell
+    // run_03_transcription_cleanup.R to use it instead of regenerating from scratch.
+    if (stage.id === 'stage3') {
+      const reviewedTsvHost = path.join(
+        outputDir, 'review_files', `${participantId}_cleaned_transcription.tsv`
+      );
+      if (fs.existsSync(reviewedTsvHost)) {
+        const reviewedTsvInContainer = `/app/review/${participantId}_cleaned_transcription.tsv`;
+        baseArgs.push('-v', `${reviewedTsvHost}:${reviewedTsvInContainer}:ro`);
+        imageArgs.push('--reviewed_tsv', reviewedTsvInContainer);
+        sendLog(`[info] Existing review file found — running in reviewed mode\n`);
+      }
+    }
+
     const stageArgs = [...baseArgs, DOCKER_IMAGE, ...imageArgs];
     sendLog(`$ docker ${stageArgs.join(' ')}\n`);
 
