@@ -99,24 +99,44 @@ function which(cmd) {
   });
 }
 
+/**
+ * Run a shell command with a hard timeout (ms).
+ * Resolves to { ok: boolean, stdout: string } — never rejects.
+ */
+function execWithTimeout(cmd, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const child = exec(cmd, { timeout: timeoutMs }, (err, stdout) => {
+      if (err) resolve({ ok: false, stdout: '' });
+      else     resolve({ ok: true,  stdout: (stdout || '').trim() });
+    });
+    // belt-and-suspenders: kill after timeout in case the OS doesn't honour exec timeout
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch {}
+      resolve({ ok: false, stdout: '' });
+    }, timeoutMs + 500);
+    child.on('close', () => clearTimeout(timer));
+  });
+}
+
 function dockerInstalled() {
   return new Promise((resolve) => {
     exec('docker --version', (err) => resolve(!err));
   });
 }
 
-function dockerRunning() {
-  return new Promise((resolve) => {
-    exec('docker info --format "{{.ServerVersion}}"', (err, stdout) =>
-      resolve(!err && !!stdout.trim())
-    );
-  });
+/** Returns true only if the Docker daemon responds within 5 seconds. */
+async function dockerRunning() {
+  const { ok, stdout } = await execWithTimeout(
+    'docker info --format "{{.ServerVersion}}"',
+    5000
+  );
+  return ok && !!stdout;
 }
 
-function imageAvailable(image) {
-  return new Promise((resolve) => {
-    exec(`docker image inspect ${image}`, (err) => resolve(!err));
-  });
+/** Returns true only if the image is locally present (fast — no network). */
+async function imageAvailable(image) {
+  const { ok } = await execWithTimeout(`docker image inspect ${image}`, 5000);
+  return ok;
 }
 
 // ---------- review helpers ----------
@@ -133,7 +153,7 @@ async function listReviewerFiles(reviewDir, participantId) {
   } catch {
     return [];
   }
-  const pattern = new RegExp(`^${participantId}_review_([A-Za-z0-9]+)_(\\d{8}T\\d{4})\.tsv$`);
+  const pattern = new RegExp(`^${participantId}_review_([A-Za-z0-9]+)_(\\d{8}T\\d{4})\\.tsv$`);
   return entries
     .map((f) => {
       const m = f.match(pattern);
@@ -184,6 +204,50 @@ async function buildPriorVotes(reviewerFiles) {
     }
   }
   return summary;
+}
+
+/**
+ * Shared logic: load the auto-cleaned stage-3 TSV as the base for a fresh review.
+ * Returns { rows, filePath, priorVotes, raters, error }
+ */
+async function loadRawReviewData(participantId) {
+  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
+
+  let tsvPath = null;
+  const candidates = [
+    path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) { tsvPath = c; break; }
+  }
+  if (!tsvPath) {
+    try {
+      const entries = await fsp.readdir(reviewDir);
+      const match = entries.find(
+        (f) => f.startsWith(participantId) && f.endsWith('.tsv') && !f.includes('_review_')
+      );
+      if (match) tsvPath = path.join(reviewDir, match);
+    } catch {}
+  }
+
+  if (!tsvPath) {
+    return {
+      rows: null, filePath: null, priorVotes: null, raters: [],
+      error: 'No cleaned transcription file found. Run stage 3 first.'
+    };
+  }
+
+  const raw = await fsp.readFile(tsvPath, 'utf8');
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const rows = lines.map((l) => l.split('\t'));
+
+  const reviewerFiles = await listReviewerFiles(reviewDir, participantId);
+  const votesMap      = await buildPriorVotes(reviewerFiles);
+  const priorVotes    = {};
+  for (const [key, val] of votesMap.entries()) priorVotes[key] = val;
+  const raters = [...new Set(reviewerFiles.map((r) => r.initials))];
+
+  return { rows, filePath: tsvPath, priorVotes, raters, error: null };
 }
 
 // ---------- window ----------
@@ -285,10 +349,14 @@ ipcMain.handle('app:paths', () => ({
 
 ipcMain.handle('app:open-path', (_e, p) => shell.openPath(p));
 
+/**
+ * system:check — each sub-check uses execWithTimeout so Docker being slow/absent
+ * can never block the renderer for more than ~5 seconds.
+ */
 ipcMain.handle('system:check', async () => {
   const installed = await dockerInstalled();
-  const running   = installed ? await dockerRunning() : false;
-  const hasImage  = running ? await imageAvailable(DOCKER_IMAGE) : false;
+  const running   = installed ? await dockerRunning()              : false;
+  const hasImage  = running   ? await imageAvailable(DOCKER_IMAGE) : false;
   const refExists = fs.existsSync(REF_DATA_DIR()) &&
     (await fsp.readdir(REF_DATA_DIR()).catch(() => [])).length > 0;
   return {
@@ -786,52 +854,78 @@ ipcMain.handle('pipeline:cancel', () => {
 
 ipcMain.handle('pipeline:stages', () => PIPELINE_STAGES);
 
-// ---------- IPC: transcription review ----------
+// =============================================================================
+// IPC: transcription review
+// =============================================================================
 
-// review:load — returns the base cleaned TSV rows plus prior-votes summary
-// from all <id>_review_<INITIALS>_<TIMESTAMP>.tsv files in the review dir.
-ipcMain.handle('review:load', async (_e, participantId) => {
-  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
-
-  // Locate the base cleaned transcription (written by stage 3)
-  let tsvPath = null;
-  const candidates = [
-    path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`),
-  ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) { tsvPath = c; break; }
-  }
-  if (!tsvPath) {
-    try {
-      const entries = await fsp.readdir(reviewDir);
-      const match = entries.find((f) => f.startsWith(participantId) && f.endsWith('.tsv') && !f.includes('_review_'));
-      if (match) tsvPath = path.join(reviewDir, match);
-    } catch {}
-  }
-
-  if (!tsvPath) return { rows: null, filePath: null, priorVotes: null, raters: [], error: 'No cleaned transcription file found. Run stage 3 first.' };
-
-  const raw = await fsp.readFile(tsvPath, 'utf8');
-  const lines = raw.split(/\r?\n/).filter(Boolean);
-  const rows = lines.map((l) => l.split('\t'));
-
-  // Load all per-reviewer files and build prior-votes map
-  const reviewerFiles = await listReviewerFiles(reviewDir, participantId);
-  const votesMap = await buildPriorVotes(reviewerFiles);
-
-  // Serialise Map to a plain object keyed by "audio_file::start"
-  const priorVotes = {};
-  for (const [key, val] of votesMap.entries()) priorVotes[key] = val;
-
-  const raters = [...new Set(reviewerFiles.map((r) => r.initials))];
-
-  return { rows, filePath: tsvPath, priorVotes, raters, error: null };
+// ---------------------------------------------------------------------------
+// review:load-raw
+//   Load the auto-cleaned stage-3 TSV as the fresh starting point for a review.
+//   Also returns priorVotes (summary of all existing per-rater files) and the
+//   list of raters who have already submitted a review file.
+// ---------------------------------------------------------------------------
+ipcMain.handle('review:load-raw', async (_e, participantId) => {
+  return loadRawReviewData(participantId);
 });
 
-// review:save — writes to a new per-reviewer file, never overwrites.
-// Expects { participantId, initials, rows }
+// Legacy alias — kept so any old renderer code referencing 'review:load' still works.
+ipcMain.handle('review:load', async (_e, participantId) => {
+  return loadRawReviewData(participantId);
+});
+
+// ---------------------------------------------------------------------------
+// review:load-own
+//   Load the latest review file saved by a specific reviewer (identified by
+//   initials).  Falls back to the raw cleaned TSV if no file exists yet for
+//   this reviewer, so the caller always gets a usable starting point.
+// ---------------------------------------------------------------------------
+ipcMain.handle('review:load-own', async (_e, { participantId, initials }) => {
+  if (!participantId) throw new Error('participantId is required.');
+  if (!initials)      throw new Error('initials are required.');
+
+  const clean = initials.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
+
+  // Find all files for this rater and pick the most recent one.
+  const allFiles  = await listReviewerFiles(reviewDir, participantId);
+  const ownFiles  = allFiles.filter((f) => f.initials.toUpperCase() === clean);
+
+  if (ownFiles.length === 0) {
+    // No prior file — fall back to the raw cleaned TSV so the reviewer has
+    // something to start from.
+    const base = await loadRawReviewData(participantId);
+    return { ...base, resumedFrom: null };
+  }
+
+  // Most recent file is last after sort (ascending timestamp).
+  const latest = ownFiles[ownFiles.length - 1];
+  const raw    = await fsp.readFile(latest.filePath, 'utf8');
+  const lines  = raw.split(/\r?\n/).filter(Boolean);
+  const rows   = lines.map((l) => l.split('\t'));
+
+  // Still load priorVotes from ALL raters for the sidebar display.
+  const votesMap   = await buildPriorVotes(allFiles);
+  const priorVotes = {};
+  for (const [key, val] of votesMap.entries()) priorVotes[key] = val;
+  const raters = [...new Set(allFiles.map((r) => r.initials))];
+
+  return {
+    rows,
+    filePath: latest.filePath,
+    priorVotes,
+    raters,
+    resumedFrom: latest.filename,
+    error: null
+  };
+});
+
+// ---------------------------------------------------------------------------
+// review:save
+//   Write a new per-reviewer file. Never overwrites existing files.
+//   Expects { participantId, initials, rows }
+// ---------------------------------------------------------------------------
 ipcMain.handle('review:save', async (_e, { participantId, initials, rows, filePath }) => {
-  // Legacy fallback: if old signature used filePath directly, honour it
+  // Legacy fallback: if old signature used filePath directly, honour it.
   if (filePath && !initials) {
     const tsv = rows.map((r) => r.join('\t')).join('\n');
     await fsp.writeFile(filePath, tsv, 'utf8');
@@ -865,7 +959,19 @@ ipcMain.handle('review:save', async (_e, { participantId, initials, rows, filePa
   return { ok: true, savedTo: dest, filename };
 });
 
-// review:list-raters — returns metadata for all reviewer files
+// ---------------------------------------------------------------------------
+// review:list-files  (canonical name used by preload.js)
+// review:list-raters (legacy alias — kept for backwards compatibility)
+//   Returns metadata for all per-reviewer files for a participant.
+// ---------------------------------------------------------------------------
+ipcMain.handle('review:list-files', async (_e, participantId) => {
+  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
+  const files = await listReviewerFiles(reviewDir, participantId);
+  return files.map(({ filePath, initials, timestamp, filename }) => ({
+    filePath, initials, timestamp, filename
+  }));
+});
+
 ipcMain.handle('review:list-raters', async (_e, participantId) => {
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
   const files = await listReviewerFiles(reviewDir, participantId);
@@ -874,6 +980,10 @@ ipcMain.handle('review:list-raters', async (_e, participantId) => {
   }));
 });
 
+// ---------------------------------------------------------------------------
+// review:get-audio-files
+//   List cropped audio files for a participant (used by the review playlist).
+// ---------------------------------------------------------------------------
 ipcMain.handle('review:get-audio-files', async (_e, participantId) => {
   const AUDIO_EXTS = ['.wav', '.mp3', '.flac', '.ogg', '.m4a'];
 
