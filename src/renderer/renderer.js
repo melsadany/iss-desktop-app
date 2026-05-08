@@ -481,6 +481,12 @@ function buildStageChecklist() {
     stage2cb.addEventListener('change', updateWhisperModelVisibility);
     updateWhisperModelVisibility();
   }
+
+  const stage3cb = $('.stage-checkbox[data-stage-id="stage3"]');
+  if (stage3cb) {
+    stage3cb.addEventListener('change', updateTranscriptionSettingsVisibility);
+    updateTranscriptionSettingsVisibility();
+  }
 }
 
 function updateWhisperModelVisibility() {
@@ -489,6 +495,14 @@ function updateWhisperModelVisibility() {
   if (!stage2cb || !row) return;
   const visible = stage2cb.checked && !stage2cb.disabled;
   row.hidden = !visible;
+}
+
+function updateTranscriptionSettingsVisibility() {
+  const stage3cb = $('.stage-checkbox[data-stage-id="stage3"]');
+  const settings = $('#transcription-settings');
+  if (!stage3cb || !settings) return;
+  const visible = stage3cb.checked && !stage3cb.disabled;
+  settings.hidden = !visible;
 }
 
 function updateWhisperRamWarn() {
@@ -551,6 +565,7 @@ async function detectRunnableStages() {
     }
 
     updateWhisperModelVisibility();
+    updateTranscriptionSettingsVisibility();
 
     const runnable = results.filter((r) => r.canRun).length;
     $('#detect-hint').textContent =
@@ -570,6 +585,7 @@ function bindRun() {
     const wm = $('#whisper-model');
     if (wm) wm.value = 'small';
     updateWhisperModelVisibility();
+    updateTranscriptionSettingsVisibility();
     updateWhisperRamWarn();
     $('#detect-hint').textContent = 'Select a session, then click Detect to auto-select runnable stages.';
   });

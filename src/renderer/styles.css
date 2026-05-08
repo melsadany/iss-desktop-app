@@ -512,6 +512,7 @@ code {
 .stage-check-item {
   display: flex;
   align-items: center;
+  width: 100%;
 }
 
 .stage-check-label {
@@ -523,6 +524,7 @@ code {
   color: var(--text);
   margin: 0;
   padding: 4px 0;
+  width: 100%;
 }
 
 .stage-check-badge {
@@ -532,6 +534,8 @@ code {
   font-weight: 500;
   border: 1px solid transparent;
   background: transparent;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .badge-warn {
