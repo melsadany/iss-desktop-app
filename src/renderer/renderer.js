@@ -9,10 +9,13 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 // ---------- navigation ----------
 $$('.nav-item').forEach((btn) => {
   btn.addEventListener('click', () => {
+    const viewId = `#view-${btn.dataset.view}`;
+    const target = $(viewId);
+    if (!target) return; // guard: skip if view section doesn't exist
     $$('.nav-item').forEach((b) => b.classList.remove('active'));
     $$('.view').forEach((v) => v.classList.remove('active'));
     btn.classList.add('active');
-    $(`#view-${btn.dataset.view}`).classList.add('active');
+    target.classList.add('active');
     onViewChange(btn.dataset.view);
   });
 });
@@ -75,33 +78,47 @@ let state = {
   reviewFilePath: null,
   reviewRows: null,
   reviewDirty: false,
-  reviewInitials: null,       // set once per app launch via initials modal
-  reviewPriorVotes: null,     // { "audio_file::start" -> { dropCount, commentCount, total, raters[] } }
-  reviewRaters: [],           // unique initials of prior reviewers
-  // review audio playlist
+  reviewInitials: null,
+  reviewPriorVotes: null,
+  reviewRaters: [],
   reviewPlaylist: [],
   reviewPlaylistIdx: -1,
-  // column index cache (indices into the FULL underlying row, not the visible columns)
   revCols: null,
 };
 
-// Columns shown in the review table, in display order.
-// 'response' is editable; 'drop' and 'comment' become checkboxes.
-// 'prior_votes' is a synthetic read-only column added by the renderer.
 const REV_VISIBLE_COLS = ['task', 'prompt', 'trial', 'response', 'confidence', 'drop', 'comment', 'prior_votes'];
 
 // ---------- bootstrap ----------
+// IMPORTANT: bind all event listeners FIRST (synchronous), then do async data
+// loading. This ensures the UI is fully interactive immediately — Docker checks
+// and other slow IPC calls cannot block button registration.
 (async function init() {
-  state.paths = await window.iss.paths();
-  state.pipelineStages = await window.iss.pipelineStages();
-  await refreshParticipants();
-  await refreshSetup();
+  // 1. Bind everything synchronously — UI is immediately interactive
   bindSetup();
   bindParticipants();
   bindRecord();
   bindRun();
   bindReview();
   bindResults();
+
+  // 2. Load data async — slow calls (Docker check, disk scan) happen in background
+  try {
+    state.paths          = await window.iss.paths();
+    state.pipelineStages = await window.iss.pipelineStages();
+    buildStagePanel();
+    buildStageChecklist();
+  } catch (err) {
+    console.error('[init] paths/stages failed:', err);
+  }
+
+  try {
+    await refreshParticipants();
+  } catch (err) {
+    console.error('[init] refreshParticipants failed:', err);
+  }
+
+  // System check runs last — it can take up to 10s waiting on Docker
+  refreshSetup().catch((err) => console.error('[init] refreshSetup failed:', err));
 })();
 
 async function onViewChange(name) {
@@ -428,6 +445,7 @@ async function convertToWav(blob) {
 // ====================================================================
 
 function buildStagePanel() {
+  if (!state.pipelineStages.length) return;
   const list = $('#stage-list');
   list.innerHTML = '';
   for (const stage of state.pipelineStages) {
@@ -443,6 +461,7 @@ function buildStagePanel() {
 }
 
 function buildStageChecklist() {
+  if (!state.pipelineStages.length) return;
   const ul = $('#stage-checklist');
   ul.innerHTML = '';
   for (const stage of state.pipelineStages) {
@@ -544,14 +563,12 @@ async function detectRunnableStages() {
 }
 
 function bindRun() {
-  buildStagePanel();
-  buildStageChecklist();
-
   $('#run-participant').addEventListener('change', refreshRunSessions);
   $('#run-session').addEventListener('change', () => {
     $$('.stage-check-badge').forEach((b) => { b.textContent = ''; b.className = 'stage-check-badge'; });
     $$('.stage-checkbox').forEach((cb) => { cb.disabled = false; cb.checked = true; });
-    $('#whisper-model').value = 'small';
+    const wm = $('#whisper-model');
+    if (wm) wm.value = 'small';
     updateWhisperModelVisibility();
     updateWhisperRamWarn();
     $('#detect-hint').textContent = 'Select a session, then click Detect to auto-select runnable stages.';
@@ -646,4 +663,410 @@ async function runPipeline() {
 
 /**
  * Show the initials modal and resolve with the entered initials.
- * If 
+ * If state.reviewInitials is already set, resolves immediately.
+ */
+function askInitials() {
+  if (state.reviewInitials) return Promise.resolve(state.reviewInitials);
+  return new Promise((resolve) => {
+    const overlay = $('#initials-overlay');
+    const input   = $('#initials-input');
+    const confirm = $('#initials-confirm');
+    const errEl   = $('#initials-error');
+
+    input.value = '';
+    errEl.textContent = '';
+    overlay.classList.remove('hidden');
+    setTimeout(() => input.focus(), 50);
+
+    function submit() {
+      const val = input.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+      if (!val) { errEl.textContent = 'Please enter 2\u20134 letters.'; return; }
+      state.reviewInitials = val;
+      overlay.classList.add('hidden');
+      resolve(val);
+    }
+
+    confirm.onclick = submit;
+    input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  });
+}
+
+// ====================================================================
+// REVIEW
+// ====================================================================
+function bindReview() {
+  // Initials badge — click to change initials
+  $('#rev-initials-badge').addEventListener('click', () => {
+    state.reviewInitials = null;
+    askInitials().then(updateInitialsBadge);
+  });
+
+  // Load buttons
+  $('#rev-load-raw').addEventListener('click', async () => {
+    const pid = $('#rev-participant').value;
+    if (!pid) { $('#rev-status').textContent = 'Select a participant first.'; return; }
+    const initials = await askInitials();
+    updateInitialsBadge(initials);
+    await loadReviewData(pid, 'raw');
+  });
+
+  $('#rev-load-own').addEventListener('click', async () => {
+    const pid = $('#rev-participant').value;
+    if (!pid) { $('#rev-status').textContent = 'Select a participant first.'; return; }
+    const initials = await askInitials();
+    updateInitialsBadge(initials);
+    await loadReviewData(pid, 'own');
+  });
+
+  // Save button
+  $('#rev-save').addEventListener('click', saveReview);
+
+  // Participant change — refresh rater list
+  $('#rev-participant').addEventListener('change', async () => {
+    const pid = $('#rev-participant').value;
+    if (pid) await refreshRaterStatus(pid);
+  });
+
+  // Transcription slider
+  const slider = $('#conf-auto');
+  const sliderVal = $('#conf-auto-value');
+  if (slider && sliderVal) {
+    slider.addEventListener('input', () => { sliderVal.textContent = parseFloat(slider.value).toFixed(2); });
+    slider.addEventListener('change', async () => {
+      const v = parseFloat(slider.value);
+      try {
+        await window.iss.writeConfidence({ strict: 0.9, review: 0.8, auto: v });
+        const saved = $('#conf-saved');
+        if (saved) { saved.textContent = 'Saved'; setTimeout(() => { saved.textContent = ''; }, 1500); }
+      } catch (err) {
+        console.error('writeConfidence failed:', err);
+      }
+    });
+    // Load existing value
+    window.iss.readConfig().then((cfg) => {
+      if (cfg.ok && cfg.thresholds) {
+        slider.value = cfg.thresholds.auto ?? 0;
+        sliderVal.textContent = parseFloat(slider.value).toFixed(2);
+      }
+    }).catch(() => {});
+  }
+}
+
+function updateInitialsBadge(initials) {
+  const badge = $('#rev-initials-badge');
+  badge.textContent = initials ? `\u2713 ${initials}` : '\u2014';
+}
+
+async function refreshRaterStatus(pid) {
+  const list = $('#rev-rater-list');
+  if (!list) return;
+  try {
+    const files = await window.iss.listReviewFiles(pid);
+    if (!files || files.length === 0) {
+      list.innerHTML = '<li class="no-raters">No review files yet for this participant.</li>';
+      return;
+    }
+    // Latest file per rater
+    const byRater = {};
+    for (const f of files) {
+      if (!byRater[f.initials] || f.timestamp > byRater[f.initials].timestamp) byRater[f.initials] = f;
+    }
+    list.innerHTML = Object.values(byRater).map((f) =>
+      `<li class="rev-rater-chip">${escapeHtml(f.initials)} <span class="chip-time">${f.timestamp.slice(0,8)}</span></li>`
+    ).join('');
+  } catch (err) {
+    list.innerHTML = '<li class="no-raters">Could not load reviewer list.</li>';
+  }
+}
+
+async function loadReviewData(pid, mode) {
+  $('#rev-status').textContent = 'Loading\u2026';
+  $('#rev-save').disabled = true;
+  try {
+    let data;
+    if (mode === 'own') {
+      data = await window.iss.loadOwnReview(pid, state.reviewInitials);
+      if (data.resumedFrom) {
+        $('#rev-status').textContent = `Resumed from ${data.resumedFrom}`;
+      } else {
+        $('#rev-status').textContent = 'No previous review found \u2014 loaded fresh transcription.';
+      }
+    } else {
+      data = await window.iss.loadRawReview(pid);
+      $('#rev-status').textContent = 'Loaded. Edit cells, then save.';
+    }
+
+    if (data.error) {
+      $('#rev-status').textContent = `Error: ${data.error}`;
+      return;
+    }
+
+    state.reviewRows      = data.rows;
+    state.reviewFilePath  = data.filePath;
+    state.reviewPriorVotes = data.priorVotes || {};
+    state.reviewRaters    = data.raters || [];
+    state.reviewDirty     = false;
+    state.revCols         = null;
+
+    renderReviewTable(data.rows);
+    await refreshRaterStatus(pid);
+    await loadReviewAudio(pid);
+    $('#rev-save').disabled = false;
+    $('#rev-filename').textContent = data.filePath ? data.filePath.split('/').pop().split('\\').pop() : 'Transcription';
+  } catch (err) {
+    $('#rev-status').textContent = `Failed to load: ${err.message}`;
+  }
+}
+
+function renderReviewTable(rows) {
+  const wrap  = $('#rev-table-wrap');
+  const empty = $('#rev-empty');
+  const table = $('#rev-table');
+
+  if (!rows || rows.length < 2) {
+    wrap.hidden  = true;
+    empty.hidden = false;
+    empty.textContent = 'No rows found in file.';
+    return;
+  }
+
+  wrap.hidden  = false;
+  empty.hidden = true;
+
+  const header = rows[0];
+  // Build column index cache
+  state.revCols = {};
+  header.forEach((h, i) => { state.revCols[h] = i; });
+
+  const visibleIndices = REV_VISIBLE_COLS.map((col) => (col === 'prior_votes' ? -1 : header.indexOf(col)));
+
+  // Header
+  const thead = table.querySelector('thead');
+  thead.innerHTML = '<tr>' + REV_VISIBLE_COLS.map((c) => `<th>${escapeHtml(c.replace('_',' '))}</th>`).join('') + '</tr>';
+
+  // Body
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+
+  for (let ri = 1; ri < rows.length; ri++) {
+    const row = rows[ri];
+    const tr  = document.createElement('tr');
+    tr.dataset.rowIdx = ri;
+
+    // Build a unique key for prior-votes lookup
+    const afIdx = header.indexOf('audio_file');
+    const stIdx = header.indexOf('start');
+    const rowKey = (afIdx >= 0 && stIdx >= 0) ? `${row[afIdx]}::${row[stIdx]}` : null;
+    const votes  = rowKey ? (state.reviewPriorVotes[rowKey] || null) : null;
+
+    REV_VISIBLE_COLS.forEach((col, ci) => {
+      const td = document.createElement('td');
+      const realIdx = visibleIndices[ci];
+
+      if (col === 'prior_votes') {
+        if (votes && votes.total > 0) {
+          td.innerHTML = `<span title="${votes.raters.join(', ')}">${votes.dropCount}/${votes.total} drop</span>`;
+          td.style.color = 'var(--color-text-muted)';
+          td.style.fontSize = '0.8em';
+        }
+      } else if (col === 'drop' || col === 'comment') {
+        const cb = document.createElement('input');
+        cb.type    = 'checkbox';
+        cb.checked = realIdx >= 0 && (row[realIdx] === 'TRUE' || row[realIdx] === 'true' || row[realIdx] === '1');
+        cb.addEventListener('change', () => {
+          if (realIdx >= 0) rows[ri][realIdx] = cb.checked ? 'TRUE' : 'FALSE';
+          state.reviewDirty = true;
+        });
+        td.appendChild(cb);
+      } else if (col === 'response') {
+        td.contentEditable = 'true';
+        td.textContent = realIdx >= 0 ? (row[realIdx] || '') : '';
+        td.classList.add('editable');
+        td.addEventListener('input', () => {
+          if (realIdx >= 0) rows[ri][realIdx] = td.textContent;
+          state.reviewDirty = true;
+        });
+        // Play audio on row click
+        td.addEventListener('focus', () => playReviewRowAudio(row, header));
+      } else {
+        td.textContent = realIdx >= 0 ? (row[realIdx] || '') : '';
+        // Play audio on row click for non-editable cells too
+        td.addEventListener('click', () => playReviewRowAudio(row, header));
+      }
+
+      tr.appendChild(td);
+    });
+
+    tbody.appendChild(tr);
+  }
+}
+
+async function saveReview() {
+  if (!state.reviewRows) { $('#rev-status').textContent = 'Nothing to save.'; return; }
+  const pid = $('#rev-participant').value;
+  const initials = state.reviewInitials;
+  if (!initials) { $('#rev-status').textContent = 'No initials set.'; return; }
+  $('#rev-save').disabled = true;
+  try {
+    const result = await window.iss.saveReview({
+      participantId: pid,
+      initials,
+      rows: state.reviewRows,
+      filePath: null, // always save as new timestamped file
+    });
+    state.reviewDirty = false;
+    $('#rev-status').textContent = `Saved \u2192 ${result.filename}`;
+    await refreshRaterStatus(pid);
+  } catch (err) {
+    $('#rev-status').textContent = `Save failed: ${err.message}`;
+  } finally {
+    $('#rev-save').disabled = false;
+  }
+}
+
+// ====================================================================
+// REVIEW — audio playlist
+// ====================================================================
+async function loadReviewAudio(pid) {
+  const wrap = $('#rev-audio-wrap');
+  try {
+    const files = await window.iss.getAudioFiles(pid);
+    state.reviewPlaylist    = files || [];
+    state.reviewPlaylistIdx = -1;
+    if (state.reviewPlaylist.length === 0) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    renderPlaylist();
+  } catch {
+    wrap.hidden = true;
+    state.reviewPlaylist = [];
+  }
+}
+
+function renderPlaylist() {
+  const container = $('#rev-playlist');
+  container.innerHTML = '';
+  state.reviewPlaylist.forEach((f, i) => {
+    const btn = document.createElement('button');
+    btn.className   = 'rev-clip-btn';
+    btn.textContent = f.stem;
+    btn.dataset.idx = i;
+    btn.addEventListener('click', () => playClip(i));
+    container.appendChild(btn);
+  });
+}
+
+function playClip(idx) {
+  const f = state.reviewPlaylist[idx];
+  if (!f) return;
+  state.reviewPlaylistIdx = idx;
+  const audio = $('#rev-audio');
+  const label = $('#rev-clip-label');
+  audio.src = f.fileUrl;
+  label.textContent = f.stem;
+  audio.play().catch(() => {});
+  // Highlight active button
+  $$('.rev-clip-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+}
+
+function playReviewRowAudio(row, header) {
+  const afIdx = header.indexOf('audio_file');
+  if (afIdx < 0) return;
+  const audioFile = row[afIdx];
+  if (!audioFile) return;
+  const stem = audioFile.replace(/\.[^.]+$/, '').split('/').pop().split('\\').pop();
+  const idx  = state.reviewPlaylist.findIndex((f) => f.stem === stem || f.stem.includes(stem) || stem.includes(f.stem));
+  if (idx >= 0) playClip(idx);
+}
+
+// ====================================================================
+// RESULTS
+// ====================================================================
+function bindResults() {
+  $('#res-participant').addEventListener('change', refreshResults);
+  $('#res-refresh').addEventListener('click', refreshResults);
+  $('#res-open-folder').addEventListener('click', async () => {
+    const pid = $('#res-participant').value;
+    if (!pid) return;
+    const p = state.participants.find((x) => x.id === pid);
+    if (p) window.iss.openPath(path.join(p.dir, 'output', 'features'));
+  });
+  $('#btn-open-file').addEventListener('click', () => {
+    const pid = $('#res-participant').value;
+    if (!pid || !state.selectedResParticipant) return;
+    window.iss.openPath(state.selectedResParticipant);
+  });
+  $('#res-files').addEventListener('click', async (e) => {
+    const li = e.target.closest('li[data-path]');
+    if (!li) return;
+    $$('#res-files li').forEach((l) => l.classList.remove('active'));
+    li.classList.add('active');
+    state.selectedResParticipant = li.dataset.path;
+    await loadResultFile(li.dataset.path, li.dataset.ext);
+    const openBtn = $('#btn-open-file');
+    if (openBtn) openBtn.hidden = false;
+  });
+}
+
+async function refreshResults() {
+  const pid = $('#res-participant').value;
+  if (!pid) return;
+  const files = await window.iss.listResults(pid);
+  const ul = $('#res-files');
+  ul.innerHTML = '';
+  if (!files.length) {
+    ul.innerHTML = '<li class="muted">No result files yet. Run the full pipeline first.</li>';
+    return;
+  }
+  for (const f of files) {
+    const li = document.createElement('li');
+    li.dataset.path = f.path;
+    li.dataset.ext  = f.ext;
+    li.innerHTML = `<span class="fname">${escapeHtml(f.name)}</span><span class="fmeta">${(f.size/1024).toFixed(1)} KB</span>`;
+    ul.appendChild(li);
+  }
+}
+
+async function loadResultFile(filePath, ext) {
+  const tableWrap  = $('#res-table-wrap');
+  const nonTabular = $('#res-nontabular');
+  const truncated  = $('#res-truncated');
+  tableWrap.hidden  = true;
+  nonTabular.hidden = true;
+  truncated.textContent = '';
+  $('#res-filemeta').textContent = filePath.split('/').pop().split('\\').pop();
+
+  if (ext === '.csv' || ext === '.tsv') {
+    try {
+      const { rows, truncated: trunc } = await window.iss.readCsv(filePath);
+      if (!rows.length) { nonTabular.hidden = false; $('#res-nontabular-msg').textContent = 'Empty file.'; return; }
+      const thead = $('#res-table thead');
+      const tbody = $('#res-table tbody');
+      thead.innerHTML = '<tr>' + rows[0].map((h) => `<th>${escapeHtml(h)}</th>`).join('') + '</tr>';
+      tbody.innerHTML = '';
+      for (let i = 1; i < rows.length; i++) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = rows[i].map((c) => `<td>${escapeHtml(c)}</td>`).join('');
+        tbody.appendChild(tr);
+      }
+      tableWrap.hidden = false;
+      if (trunc) truncated.textContent = 'File truncated at 2 MB.';
+    } catch (err) {
+      nonTabular.hidden = false;
+      $('#res-nontabular-msg').textContent = 'Could not read file: ' + err.message;
+    }
+  } else {
+    nonTabular.hidden = false;
+    $('#res-nontabular-msg').textContent = `${ext.toUpperCase()} files cannot be previewed. Open in folder to view.`;
+  }
+}
+
+// ====================================================================
+// UTILS
+// ====================================================================
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
