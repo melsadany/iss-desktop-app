@@ -123,6 +123,7 @@
         <button class="nav-item" data-view="run">Run pipeline</button>
         <button class="nav-item" data-view="review">Review</button>
         <button class="nav-item" data-view="results">Results</button>
+        <button class="nav-item" data-view="docs">Docs</button>
       </nav>
       <div class="sidebar-foot">
         <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
@@ -314,7 +315,7 @@
               </div>
 
               <!-- ── Transcription settings ─────────────────────────────── -->
-              <details class="transcription-settings" id="transcription-settings">
+              <details class="transcription-settings" id="transcription-settings" hidden>
                 <summary>Transcription settings</summary>
 
                 <div class="setting-row">
@@ -473,6 +474,118 @@
             </div>
 
             <p class="muted" id="res-truncated"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- DOCS -->
+      <section id="view-docs" class="view">
+        <h1>Documentation</h1>
+        <p class="lead">Summary of the Iowa Speech Sample tasks, extracted features, and how to read the outputs.</p>
+
+        <div class="row">
+          <div class="card">
+            <h3>Contents</h3>
+            <ul class="filelist">
+              <li><a href="#docs-task-design">Task design</a></li>
+              <li><a href="#docs-features">Feature families</a></li>
+              <li><a href="#docs-interpretation">Interpreting values</a></li>
+              <li><a href="#docs-files">Output files</a></li>
+            </ul>
+            <p class="hint">For full methodological detail, see the ISS manuscript and analysis code linked from GitHub.</p>
+          </div>
+
+          <div class="card grow docs-body">
+            <h2 id="docs-task-design">Task design</h2>
+            <p>
+              The Iowa Speech Sample (ISS) is a short spoken-language battery (≈10 minutes) that elicits
+              semantic associations, letter-based word generation, rapid naming, and face–digit matching.
+              An extended version adds sentence repetition, complex semantic prompts, timed word reading,
+              and simple visual/auditory reaction-time tasks.
+            </p>
+            <ul>
+              <li><strong>Semantic fluency:</strong> 12‑second prompts (e.g., <em>street, garden</em>) where participants say
+                  as many related words as possible.</li>
+              <li><strong>Phonemic fluency (COWAT-style):</strong> 30‑second trials generating words beginning with letters
+                  A, S, C, F, and L.</li>
+              <li><strong>Rapid Automatized Naming (RAN):</strong> reading number grids as quickly and accurately as possible
+                  across short timed trials.</li>
+              <li><strong>Face–digit matching:</strong> quickly mapping faces to digits (1–10) to probe visual–verbal mapping.</li>
+              <li><strong>Sentence repetition (extended):</strong> repeating three sentences of increasing syntactic complexity
+                  to index verbal working memory.</li>
+              <li><strong>Complex semantic prompts, word reading, and reaction time (extended):</strong> additional prompts that
+                  stress abstract semantic search, reading fluency, and simple response speed.</li>
+            </ul>
+
+            <h2 id="docs-features">Feature families</h2>
+            <p>
+              The pipeline extracts more than 90 features per participant, grouped into several domains that
+              can be viewed in the <strong>Results</strong> tab (per‑prompt, per‑task, and per‑participant files).
+            </p>
+            <ul>
+              <li><strong>Productivity &amp; lexical features:</strong> total and unique word counts, lexical diversity, age of
+                  acquisition, concreteness, imageability, familiarity, and affective norms (valence, arousal).</li>
+              <li><strong>Temporal dynamics:</strong> onset latency, inter‑word intervals, pause patterns, and response‑time
+                  distribution metrics (e.g., Gini and Kolmogorov–Smirnov statistics for how evenly responses
+                  are spread across the trial).</li>
+              <li><strong>Strategic timing patterns:</strong> burstiness (clustering of responses), within‑task productivity
+                  slopes (warm‑up vs fatigue), and "insight"‑like patterns such as long pauses followed by
+                  rapid output.</li>
+              <li><strong>Semantic trajectory features:</strong> distances in BERT embedding space, trajectory length and
+                  efficiency, clustering of responses in semantic space, movement toward/away from the prompt,
+                  and proximity to predefined "cognitive anchor" word sets (e.g., spatial or reasoning terms).</li>
+              <li><strong>Phonetic &amp; phonological features:</strong> phonetic embeddings from PWESuite, trajectory length and
+                  clustering in phonological space, phoneme and syllable counts, and basic phonological
+                  complexity indices.</li>
+              <li><strong>Archetypal patterns:</strong> coverage and switching among learned "archetype" regions in semantic
+                  and phonetic space (archetype count, switches, span, and richness), summarizing the overall
+                  breadth and organization of search.</li>
+              <li><strong>Task adherence &amp; rule violations:</strong> counts of repetitions, prompt repeats, non‑responses,
+                  or off‑task comments; these are excluded from most feature computations but are retained as
+                  quality indicators.</li>
+              <li><strong>Extended‑task features:</strong> sentence‑repetition bigram accuracy, visual and auditory reaction
+                  times, and reading speed features when those tasks are present.</li>
+            </ul>
+
+            <h2 id="docs-interpretation">Interpreting values</h2>
+            <p>
+              ISS features are intended as <em>research measures</em> rather than clinical scores. They can capture
+              small, domain‑specific associations with standardized tests (e.g., working memory, processing
+              speed, or visuospatial reasoning), but they have not been validated as standalone diagnostic
+              tools.
+            </p>
+            <ul>
+              <li><strong>Higher word counts and faster timing</strong> often track general efficiency and processing speed, but
+                  extreme values may also reflect strategy or task engagement.</li>
+              <li><strong>Lexical maturity features</strong> (e.g., later age of acquisition, higher imageability) can indicate more
+                  elaborated or abstract responses, especially in semantic fluency.</li>
+              <li><strong>Semantic trajectory and archetype metrics</strong> describe how broadly and systematically participants
+                  explore the space of possible responses, rather than "good" versus "bad" performance in a
+                  clinical sense.</li>
+              <li><strong>Reaction‑time and sentence‑repetition features</strong> have shown associations with processing speed and
+                  working‑memory indices in research samples, but effect sizes are modest and sample‑dependent.</li>
+            </ul>
+            <p class="hint">
+              When interpreting features, focus on patterns across related measures (e.g., a cluster of timing
+              features or several semantic‑trajectory metrics) rather than any single value in isolation.
+            </p>
+
+            <h2 id="docs-files">Output files</h2>
+            <p>
+              Pipeline outputs are written under each participant&rsquo;s <code>output</code> folder. Key files include:
+            </p>
+            <ul>
+              <li><code>review_files/&lt;ID&gt;_cleaned_transcription.tsv</code>: cleaned, prompt‑aligned transcript used as
+                  input to feature extraction.</li>
+              <li><code>features/&lt;ID&gt;_per_prompt.rds</code>: per‑prompt feature table (one row per prompt).</li>
+              <li><code>features/&lt;ID&gt;_per_task.rds</code>: features aggregated within each task type.</li>
+              <li><code>features/&lt;ID&gt;_per_participant.rds</code>: single‑row summary of all tasks for that participant.</li>
+              <li><code>features/&lt;ID&gt;_all_features.rds</code>: a wide table containing the full feature set.</li>
+            </ul>
+            <p>
+              You can preview tabular outputs in the <strong>Results</strong> tab or open the folder to analyze them in R or
+              Python using the code from the ISS analysis repository.
+            </p>
           </div>
         </div>
       </section>
