@@ -119,6 +119,73 @@ function imageAvailable(image) {
   });
 }
 
+// ---------- review helpers ----------
+
+/**
+ * List all per-reviewer TSV files for a participant.
+ * Pattern: <participantId>_review_<INITIALS>_<TIMESTAMP>.tsv
+ * Returns array of { filePath, initials, timestamp, filename }
+ */
+async function listReviewerFiles(reviewDir, participantId) {
+  let entries;
+  try {
+    entries = await fsp.readdir(reviewDir);
+  } catch {
+    return [];
+  }
+  const pattern = new RegExp(`^${participantId}_review_([A-Za-z0-9]+)_(\\d{8}T\\d{4})\.tsv$`);
+  return entries
+    .map((f) => {
+      const m = f.match(pattern);
+      if (!m) return null;
+      return { filePath: path.join(reviewDir, f), initials: m[1], timestamp: m[2], filename: f };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+}
+
+/**
+ * Parse a TSV file into { header: string[], rows: string[][] }
+ */
+async function parseTsv(filePath) {
+  const raw = await fsp.readFile(filePath, 'utf8');
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return { header: [], rows: [] };
+  const [headerLine, ...dataLines] = lines;
+  const header = headerLine.split('\t');
+  const rows = dataLines.map((l) => l.split('\t'));
+  return { header, rows };
+}
+
+/**
+ * Build a per-row prior-votes summary from all reviewer files.
+ * Returns a Map keyed by a stable row key (audio_file + "::" + start)
+ * with value { dropCount, commentCount, total, raters: string[] }
+ */
+async function buildPriorVotes(reviewerFiles) {
+  const summary = new Map();
+  for (const rf of reviewerFiles) {
+    let parsed;
+    try { parsed = await parseTsv(rf.filePath); } catch { continue; }
+    const { header, rows } = parsed;
+    const audioCol   = header.indexOf('audio_file');
+    const startCol   = header.indexOf('start');
+    const dropCol    = header.indexOf('drop');
+    const commentCol = header.indexOf('comment');
+    if (audioCol === -1 || startCol === -1) continue;
+    for (const row of rows) {
+      const key = `${row[audioCol]}::${row[startCol]}`;
+      if (!summary.has(key)) summary.set(key, { dropCount: 0, commentCount: 0, total: 0, raters: [] });
+      const v = summary.get(key);
+      v.total++;
+      v.raters.push(rf.initials);
+      if (dropCol    !== -1 && row[dropCol]    === 'TRUE') v.dropCount++;
+      if (commentCol !== -1 && row[commentCol] === 'TRUE') v.commentCount++;
+    }
+  }
+  return summary;
+}
+
 // ---------- window ----------
 let mainWin;
 
@@ -640,22 +707,27 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
       if (whisperModel && whisperModel !== 'small') {
         imageArgs.push('--whisper-model', whisperModel);
       }
-      // Pass the original uncut audio so 02_transcription.py can also
-      // transcribe the full recording for absolute-timestamp mapping.
       imageArgs.push('--full_audio_file', audioInContainer);
       sendLog('[info] Full-audio transcription enabled — will also produce <id>_full_audio_whisperX.tsv\n');
     }
 
-    // ── Stage 3: pass --reviewed_tsv if review file already exists ──────────
+    // ── Stage 3: mount entire review_files/ dir and pass --review_dir ───────
+    // run_03_transcription_cleanup.R will scan for all <id>_review_*.tsv files
+    // and compute consensus across all raters automatically.
     if (stage.id === 'stage3') {
-      const reviewedTsvHost = path.join(
-        outputDir, 'review_files', `${participantId}_cleaned_transcription.tsv`
-      );
-      if (fs.existsSync(reviewedTsvHost)) {
-        const reviewedTsvInContainer = `/app/review/${participantId}_cleaned_transcription.tsv`;
-        baseArgs.push('-v', `${reviewedTsvHost}:${reviewedTsvInContainer}:ro`);
-        imageArgs.push('--reviewed_tsv', reviewedTsvInContainer);
-        sendLog(`[info] Existing review file found — running in reviewed mode\n`);
+      const reviewDirHost = path.join(outputDir, 'review_files');
+      const reviewFiles = await listReviewerFiles(reviewDirHost, participantId);
+
+      if (reviewFiles.length > 0) {
+        const reviewDirInContainer = '/app/review_input';
+        baseArgs.push('-v', `${reviewDirHost}:${reviewDirInContainer}:ro`);
+        imageArgs.push('--review_dir', reviewDirInContainer);
+        sendLog(`[info] ${reviewFiles.length} reviewer file(s) found — running consensus mode\n`);
+        for (const rf of reviewFiles) {
+          sendLog(`[info]   ${rf.initials} @ ${rf.timestamp}: ${rf.filename}\n`);
+        }
+      } else {
+        sendLog('[info] No reviewer files found — running automatic cleanup\n');
       }
     }
 
@@ -715,10 +787,14 @@ ipcMain.handle('pipeline:cancel', () => {
 ipcMain.handle('pipeline:stages', () => PIPELINE_STAGES);
 
 // ---------- IPC: transcription review ----------
+
+// review:load — returns the base cleaned TSV rows plus prior-votes summary
+// from all <id>_review_<INITIALS>_<TIMESTAMP>.tsv files in the review dir.
 ipcMain.handle('review:load', async (_e, participantId) => {
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
-  let tsvPath = null;
 
+  // Locate the base cleaned transcription (written by stage 3)
+  let tsvPath = null;
   const candidates = [
     path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`),
   ];
@@ -728,24 +804,74 @@ ipcMain.handle('review:load', async (_e, participantId) => {
   if (!tsvPath) {
     try {
       const entries = await fsp.readdir(reviewDir);
-      const match = entries.find((f) => f.startsWith(participantId) && f.endsWith('.tsv'));
+      const match = entries.find((f) => f.startsWith(participantId) && f.endsWith('.tsv') && !f.includes('_review_'));
       if (match) tsvPath = path.join(reviewDir, match);
     } catch {}
   }
 
-  if (!tsvPath) return { rows: null, filePath: null, error: 'No cleaned transcription file found. Run stage 3 first.' };
+  if (!tsvPath) return { rows: null, filePath: null, priorVotes: null, raters: [], error: 'No cleaned transcription file found. Run stage 3 first.' };
 
   const raw = await fsp.readFile(tsvPath, 'utf8');
   const lines = raw.split(/\r?\n/).filter(Boolean);
   const rows = lines.map((l) => l.split('\t'));
-  return { rows, filePath: tsvPath, error: null };
+
+  // Load all per-reviewer files and build prior-votes map
+  const reviewerFiles = await listReviewerFiles(reviewDir, participantId);
+  const votesMap = await buildPriorVotes(reviewerFiles);
+
+  // Serialise Map to a plain object keyed by "audio_file::start"
+  const priorVotes = {};
+  for (const [key, val] of votesMap.entries()) priorVotes[key] = val;
+
+  const raters = [...new Set(reviewerFiles.map((r) => r.initials))];
+
+  return { rows, filePath: tsvPath, priorVotes, raters, error: null };
 });
 
-ipcMain.handle('review:save', async (_e, { filePath, rows }) => {
-  if (!filePath) throw new Error('No file path provided.');
+// review:save — writes to a new per-reviewer file, never overwrites.
+// Expects { participantId, initials, rows }
+ipcMain.handle('review:save', async (_e, { participantId, initials, rows, filePath }) => {
+  // Legacy fallback: if old signature used filePath directly, honour it
+  if (filePath && !initials) {
+    const tsv = rows.map((r) => r.join('\t')).join('\n');
+    await fsp.writeFile(filePath, tsv, 'utf8');
+    return { ok: true, savedTo: filePath };
+  }
+
+  if (!participantId) throw new Error('participantId is required.');
+  if (!initials)      throw new Error('initials are required.');
+
+  const clean = initials.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+  if (!clean) throw new Error('Initials must contain at least one alphanumeric character.');
+
+  const now = new Date();
+  const ts  = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    'T',
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+  ].join('');
+
+  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
+  await fsp.mkdir(reviewDir, { recursive: true });
+
+  const filename = `${participantId}_review_${clean}_${ts}.tsv`;
+  const dest     = path.join(reviewDir, filename);
+
   const tsv = rows.map((r) => r.join('\t')).join('\n');
-  await fsp.writeFile(filePath, tsv, 'utf8');
-  return { ok: true };
+  await fsp.writeFile(dest, tsv, 'utf8');
+  return { ok: true, savedTo: dest, filename };
+});
+
+// review:list-raters — returns metadata for all reviewer files
+ipcMain.handle('review:list-raters', async (_e, participantId) => {
+  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
+  const files = await listReviewerFiles(reviewDir, participantId);
+  return files.map(({ filePath, initials, timestamp, filename }) => ({
+    filePath, initials, timestamp, filename
+  }));
 });
 
 ipcMain.handle('review:get-audio-files', async (_e, participantId) => {

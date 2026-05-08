@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('iss', {
   // transcription review
   loadReview:      (participantId)    => ipcRenderer.invoke('review:load', participantId),
   saveReview:      (data)             => ipcRenderer.invoke('review:save', data),
+  listRaters:      (participantId)    => ipcRenderer.invoke('review:list-raters', participantId),
   getAudioFiles:   (participantId)    => ipcRenderer.invoke('review:get-audio-files', participantId),
 
   // results
