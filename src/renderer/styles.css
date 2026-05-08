@@ -515,8 +515,10 @@ code {
   width: 100%;
 }
 
+/* Override global `label { display: block }` so the checkbox sits
+   inline with the stage name text on the same row. */
 .stage-check-label {
-  display: flex;
+  display: flex !important;
   align-items: center;
   gap: 8px;
   cursor: pointer;
@@ -525,6 +527,18 @@ code {
   margin: 0;
   padding: 4px 0;
   width: 100%;
+}
+
+/* Override global `input { width: 100% }` — checkbox must be intrinsic size. */
+.stage-check-label input[type="checkbox"] {
+  width: auto;
+  margin-top: 0;
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  cursor: pointer;
 }
 
 .stage-check-badge {
