@@ -1,14 +1,4 @@
-/* Iowa Speech Sample — Electron main process
- *
- * Responsibilities:
- *   • Create the BrowserWindow
- *   • Persist participants/sessions in userData/iss_db.json
- *   • Save recorded audio blobs to disk
- *   • Pull/run the melsadany/iowa_speech_sample Docker image
- *   • Auto-download the Zenodo reference_data archive on first run
- *   • Stream Docker stdout/stderr live to the renderer
- *   • Run pipeline stages sequentially, emitting per-stage status events
- */
+/* Iowa Speech Sample — Electron main process */
 
 const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
 const path = require('path');
@@ -18,7 +8,7 @@ const os = require('os');
 const { spawn, exec } = require('child_process');
 const { pipeline } = require('stream/promises');
 const https = require('https');
-const yaml = require('js-yaml');
+// NOTE: no external deps — js-yaml is NOT in package.json, so we use built-in helpers below.
 
 // ---------- paths ----------
 const USER_DATA      = () => app.getPath('userData');
@@ -31,32 +21,53 @@ const CONFIG_FILE    = () => path.join(CONFIG_DIR(), 'task_template.yaml');
 const DOCKER_IMAGE = 'melsadany/iowa_speech_sample:latest';
 const ZENODO_URL   = 'https://zenodo.org/records/18675411/files/reference_data.zip?download=1';
 
+// ---------- minimal YAML helpers (no external dep) ----------
+// Reads the three confidence_threshold values from the YAML file using regex.
+// Returns { strict, review, auto } with numeric defaults if not found.
+function readYamlThresholds(raw) {
+  const get = (key, def) => {
+    const m = raw.match(new RegExp(`\\b${key}\\s*:\\s*([0-9.]+)`));
+    return m ? parseFloat(m[1]) : def;
+  };
+  return {
+    strict: get('strict', 0.9),
+    review: get('review', 0.8),
+    auto:   get('auto',   0.0),
+  };
+}
+
+// Writes the three values back into the YAML string, preserving all other content.
+// If a key already exists it is updated in-place; if it doesn't exist the whole
+// confidence_threshold block is appended under transcription:.
+function writeYamlThresholds(raw, { strict, review, auto }) {
+  const tryReplace = (text, key, val) => {
+    const re = new RegExp(`(\\b${key}\\s*:\\s*)[0-9.]+`);
+    return re.test(text) ? text.replace(re, `$1${val}`) : null;
+  };
+  let out = raw;
+  for (const [k, v] of [['strict', strict], ['review', review], ['auto', auto]]) {
+    const replaced = tryReplace(out, k, v);
+    if (replaced !== null) { out = replaced; continue; }
+    // Key missing — append under transcription: block or at end
+    if (/^transcription\s*:/m.test(out)) {
+      out = out.replace(
+        /^(transcription\s*:.*)/m,
+        `$1\n  confidence_threshold:\n    strict: ${strict}\n    review: ${review}\n    auto: ${auto}`
+      );
+    } else {
+      out += `\ntranscription:\n  confidence_threshold:\n    strict: ${strict}\n    review: ${review}\n    auto: ${auto}\n`;
+    }
+    break; // all three written at once in the block above
+  }
+  return out;
+}
+
 // ---------- pipeline stages ----------
 const PIPELINE_STAGES = [
-  {
-    id:          'stage1',
-    label:       'Audio preprocessing',
-    stageArg:    '1',
-    outputCheck: 'cropped_audio',
-  },
-  {
-    id:          'stage2',
-    label:       'Transcription',
-    stageArg:    '2',
-    outputCheck: 'transcriptions',
-  },
-  {
-    id:          'stage3',
-    label:       'Transcription cleanup',
-    stageArg:    '3',
-    outputCheck: 'review_files',
-  },
-  {
-    id:          'stage4',
-    label:       'Feature extraction',
-    stageArg:    '4',
-    outputCheck: 'features',
-  },
+  { id: 'stage1', label: 'Audio preprocessing',    stageArg: '1', outputCheck: 'cropped_audio'  },
+  { id: 'stage2', label: 'Transcription',            stageArg: '2', outputCheck: 'transcriptions' },
+  { id: 'stage3', label: 'Transcription cleanup',    stageArg: '3', outputCheck: 'review_files'   },
+  { id: 'stage4', label: 'Feature extraction',       stageArg: '4', outputCheck: 'features'       },
 ];
 
 async function stageOutputExists(outputDir, check, participantId) {
@@ -64,9 +75,7 @@ async function stageOutputExists(outputDir, check, participantId) {
   try {
     const entries = await fsp.readdir(subDir);
     if (entries.length > 0) return true;
-  } catch {
-    // subdir doesn't exist — try flat-file fallback
-  }
+  } catch {}
   const flatDir = path.join(outputDir, check);
   try {
     const entries = await fsp.readdir(flatDir);
@@ -79,37 +88,23 @@ async function stageOutputExists(outputDir, check, participantId) {
 // ---------- DB ----------
 async function loadDB() {
   try {
-    const raw = await fsp.readFile(DB_PATH(), 'utf8');
-    return JSON.parse(raw);
+    return JSON.parse(await fsp.readFile(DB_PATH(), 'utf8'));
   } catch {
     return { participants: [], sessions: [] };
   }
 }
-
 async function saveDB(db) {
   await fsp.mkdir(USER_DATA(), { recursive: true });
   await fsp.writeFile(DB_PATH(), JSON.stringify(db, null, 2), 'utf8');
 }
 
-// ---------- helpers ----------
-function which(cmd) {
-  return new Promise((resolve) => {
-    const probe = process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`;
-    exec(probe, (err, stdout) => resolve(err ? null : stdout.trim().split(/\r?\n/)[0]));
-  });
-}
-
-/**
- * Run a shell command with a hard timeout (ms).
- * Resolves to { ok: boolean, stdout: string } — never rejects.
- */
+// ---------- shell helpers ----------
 function execWithTimeout(cmd, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const child = exec(cmd, { timeout: timeoutMs }, (err, stdout) => {
       if (err) resolve({ ok: false, stdout: '' });
       else     resolve({ ok: true,  stdout: (stdout || '').trim() });
     });
-    // belt-and-suspenders: kill after timeout in case the OS doesn't honour exec timeout
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch {}
       resolve({ ok: false, stdout: '' });
@@ -119,195 +114,94 @@ function execWithTimeout(cmd, timeoutMs = 5000) {
 }
 
 function dockerInstalled() {
-  return new Promise((resolve) => {
-    exec('docker --version', (err) => resolve(!err));
-  });
+  return new Promise((resolve) => exec('docker --version', (err) => resolve(!err)));
 }
-
-/** Returns true only if the Docker daemon responds within 5 seconds. */
 async function dockerRunning() {
-  const { ok, stdout } = await execWithTimeout(
-    'docker info --format "{{.ServerVersion}}"',
-    5000
-  );
+  const { ok, stdout } = await execWithTimeout('docker info --format "{{.ServerVersion}}"', 5000);
   return ok && !!stdout;
 }
-
-/** Returns true only if the image is locally present (fast — no network). */
 async function imageAvailable(image) {
   const { ok } = await execWithTimeout(`docker image inspect ${image}`, 5000);
   return ok;
 }
 
 // ---------- review helpers ----------
-
-/**
- * List all per-reviewer TSV files for a participant.
- * Pattern: <participantId>_review_<INITIALS>_<TIMESTAMP>.tsv
- * Returns array of { filePath, initials, timestamp, filename }
- */
 async function listReviewerFiles(reviewDir, participantId) {
   let entries;
-  try {
-    entries = await fsp.readdir(reviewDir);
-  } catch {
-    return [];
-  }
+  try { entries = await fsp.readdir(reviewDir); } catch { return []; }
   const pattern = new RegExp(`^${participantId}_review_([A-Za-z0-9]+)_(\\d{8}T\\d{4})\\.tsv$`);
   return entries
-    .map((f) => {
-      const m = f.match(pattern);
-      if (!m) return null;
-      return { filePath: path.join(reviewDir, f), initials: m[1], timestamp: m[2], filename: f };
-    })
+    .map((f) => { const m = f.match(pattern); return m ? { filePath: path.join(reviewDir, f), initials: m[1], timestamp: m[2], filename: f } : null; })
     .filter(Boolean)
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
-/**
- * Parse a TSV file into { header: string[], rows: string[][] }
- */
 async function parseTsv(filePath) {
-  const raw = await fsp.readFile(filePath, 'utf8');
-  const lines = raw.split(/\r?\n/).filter(Boolean);
+  const lines = (await fsp.readFile(filePath, 'utf8')).split(/\r?\n/).filter(Boolean);
   if (!lines.length) return { header: [], rows: [] };
-  const [headerLine, ...dataLines] = lines;
-  const header = headerLine.split('\t');
-  const rows = dataLines.map((l) => l.split('\t'));
-  return { header, rows };
+  const [h, ...rest] = lines;
+  return { header: h.split('\t'), rows: rest.map((l) => l.split('\t')) };
 }
 
-/**
- * Build a per-row prior-votes summary from all reviewer files.
- * Returns a Map keyed by a stable row key (audio_file + "::" + start)
- * with value { dropCount, commentCount, total, raters: string[] }
- */
 async function buildPriorVotes(reviewerFiles) {
   const summary = new Map();
   for (const rf of reviewerFiles) {
     let parsed;
     try { parsed = await parseTsv(rf.filePath); } catch { continue; }
     const { header, rows } = parsed;
-    const audioCol   = header.indexOf('audio_file');
-    const startCol   = header.indexOf('start');
-    const dropCol    = header.indexOf('drop');
-    const commentCol = header.indexOf('comment');
-    if (audioCol === -1 || startCol === -1) continue;
+    const aC = header.indexOf('audio_file'), sC = header.indexOf('start');
+    const dC = header.indexOf('drop'),       cC = header.indexOf('comment');
+    if (aC === -1 || sC === -1) continue;
     for (const row of rows) {
-      const key = `${row[audioCol]}::${row[startCol]}`;
+      const key = `${row[aC]}::${row[sC]}`;
       if (!summary.has(key)) summary.set(key, { dropCount: 0, commentCount: 0, total: 0, raters: [] });
       const v = summary.get(key);
-      v.total++;
-      v.raters.push(rf.initials);
-      if (dropCol    !== -1 && row[dropCol]    === 'TRUE') v.dropCount++;
-      if (commentCol !== -1 && row[commentCol] === 'TRUE') v.commentCount++;
+      v.total++; v.raters.push(rf.initials);
+      if (dC !== -1 && row[dC] === 'TRUE') v.dropCount++;
+      if (cC !== -1 && row[cC] === 'TRUE') v.commentCount++;
     }
   }
   return summary;
 }
 
-/**
- * Shared logic: load the auto-cleaned stage-3 TSV as the base for a fresh review.
- * Returns { rows, filePath, priorVotes, raters, error }
- */
 async function loadRawReviewData(participantId) {
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
-
   let tsvPath = null;
-  const candidates = [
-    path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`),
-  ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) { tsvPath = c; break; }
-  }
+  const fixed = path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`);
+  if (fs.existsSync(fixed)) { tsvPath = fixed; }
   if (!tsvPath) {
     try {
-      const entries = await fsp.readdir(reviewDir);
-      const match = entries.find(
+      const match = (await fsp.readdir(reviewDir)).find(
         (f) => f.startsWith(participantId) && f.endsWith('.tsv') && !f.includes('_review_')
       );
       if (match) tsvPath = path.join(reviewDir, match);
     } catch {}
   }
+  if (!tsvPath) return { rows: null, filePath: null, priorVotes: null, raters: [], error: 'No cleaned transcription file found. Run stage 3 first.' };
 
-  if (!tsvPath) {
-    return {
-      rows: null, filePath: null, priorVotes: null, raters: [],
-      error: 'No cleaned transcription file found. Run stage 3 first.'
-    };
-  }
-
-  const raw = await fsp.readFile(tsvPath, 'utf8');
-  const lines = raw.split(/\r?\n/).filter(Boolean);
-  const rows = lines.map((l) => l.split('\t'));
-
+  const rows = (await fsp.readFile(tsvPath, 'utf8')).split(/\r?\n/).filter(Boolean).map((l) => l.split('\t'));
   const reviewerFiles = await listReviewerFiles(reviewDir, participantId);
-  const votesMap      = await buildPriorVotes(reviewerFiles);
-  const priorVotes    = {};
-  for (const [key, val] of votesMap.entries()) priorVotes[key] = val;
-  const raters = [...new Set(reviewerFiles.map((r) => r.initials))];
-
-  return { rows, filePath: tsvPath, priorVotes, raters, error: null };
+  const votesMap = await buildPriorVotes(reviewerFiles);
+  const priorVotes = {};
+  for (const [k, v] of votesMap.entries()) priorVotes[k] = v;
+  return { rows, filePath: tsvPath, priorVotes, raters: [...new Set(reviewerFiles.map((r) => r.initials))], error: null };
 }
 
 // ---------- window ----------
 let mainWin;
-
 function createWindow() {
   mainWin = new BrowserWindow({
-    width: 1180,
-    height: 820,
-    minWidth: 980,
-    minHeight: 680,
-    backgroundColor: '#1a242f',
-    title: 'Iowa Speech Sample',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
-    }
+    width: 1180, height: 820, minWidth: 980, minHeight: 680,
+    backgroundColor: '#1a242f', title: 'Iowa Speech Sample',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false }
   });
 
-  const template = [
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'Open data folder',
-          click: () => shell.openPath(USER_DATA())
-        },
-        { type: 'separator' },
-        { role: process.platform === 'darwin' ? 'close' : 'quit' }
-      ]
-    },
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: 'File', submenu: [{ label: 'Open data folder', click: () => shell.openPath(USER_DATA()) }, { type: 'separator' }, { role: process.platform === 'darwin' ? 'close' : 'quit' }] },
     { role: 'editMenu' },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' }
-      ]
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'GitHub repository',
-          click: () => shell.openExternal('https://github.com/melsadany/iss-pipeline')
-        },
-        {
-          label: 'Reference data on Zenodo',
-          click: () => shell.openExternal('https://zenodo.org/records/18675411')
-        }
-      ]
-    }
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
+    { label: 'Help', submenu: [{ label: 'GitHub repository', click: () => shell.openExternal('https://github.com/melsadany/iss-pipeline') }, { label: 'Reference data on Zenodo', click: () => shell.openExternal('https://zenodo.org/records/18675411') }] },
+  ]));
 
   mainWin.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 }
@@ -318,87 +212,42 @@ app.whenReady().then(async () => {
   await fsp.mkdir(CONFIG_DIR(),     { recursive: true });
 
   const bundledConfig = path.join(process.resourcesPath || path.join(__dirname, '..', '..', 'resources'), 'task_template.yaml');
-  const userConfig    = CONFIG_FILE();
-  if (!fs.existsSync(userConfig) && fs.existsSync(bundledConfig)) {
-    await fsp.copyFile(bundledConfig, userConfig);
-  }
+  const userConfig = CONFIG_FILE();
+  if (!fs.existsSync(userConfig) && fs.existsSync(bundledConfig)) await fsp.copyFile(bundledConfig, userConfig);
 
   createWindow();
-
-  exec(`docker pull ${DOCKER_IMAGE}`, () => {
-    mainWin?.webContents.send('docker:pull-log', '[startup] Image freshness check complete.\n');
-  });
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  exec(`docker pull ${DOCKER_IMAGE}`, () => mainWin?.webContents.send('docker:pull-log', '[startup] Image freshness check complete.\n'));
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
-// ---------- IPC: app/system info ----------
-ipcMain.handle('app:paths', () => ({
-  userData: USER_DATA(),
-  participants: PARTICIPANTS_D(),
-  referenceData: REF_DATA_DIR(),
-  config: CONFIG_DIR(),
-  configFile: CONFIG_FILE()
-}));
-
+// ---------- IPC: app/system ----------
+ipcMain.handle('app:paths', () => ({ userData: USER_DATA(), participants: PARTICIPANTS_D(), referenceData: REF_DATA_DIR(), config: CONFIG_DIR(), configFile: CONFIG_FILE() }));
 ipcMain.handle('app:open-path', (_e, p) => shell.openPath(p));
 
-/**
- * system:check — each sub-check uses execWithTimeout so Docker being slow/absent
- * can never block the renderer for more than ~5 seconds.
- */
 ipcMain.handle('system:check', async () => {
   const installed = await dockerInstalled();
   const running   = installed ? await dockerRunning()              : false;
   const hasImage  = running   ? await imageAvailable(DOCKER_IMAGE) : false;
-  const refExists = fs.existsSync(REF_DATA_DIR()) &&
-    (await fsp.readdir(REF_DATA_DIR()).catch(() => [])).length > 0;
-  return {
-    platform: process.platform,
-    arch: process.arch,
-    dockerInstalled: installed,
-    dockerRunning: running,
-    imagePresent: hasImage,
-    imageName: DOCKER_IMAGE,
-    referenceDataPresent: refExists,
-    referenceDataPath: REF_DATA_DIR()
-  };
+  const refExists = fs.existsSync(REF_DATA_DIR()) && (await fsp.readdir(REF_DATA_DIR()).catch(() => [])).length > 0;
+  return { platform: process.platform, arch: process.arch, dockerInstalled: installed, dockerRunning: running, imagePresent: hasImage, imageName: DOCKER_IMAGE, referenceDataPresent: refExists, referenceDataPath: REF_DATA_DIR() };
 });
 
-// ---------- IPC: config read/write ----------
+// ---------- IPC: config ----------
 ipcMain.handle('config:read', async () => {
   try {
     const raw = await fsp.readFile(CONFIG_FILE(), 'utf8');
-    const cfg = yaml.load(raw);
-    const thresholds = cfg?.transcription?.confidence_threshold ?? {
-      strict: 0.9,
-      review: 0.8,
-      auto:   0.0
-    };
-    return { ok: true, thresholds };
+    return { ok: true, thresholds: readYamlThresholds(raw) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-// Writes only the three confidence_threshold values; leaves the rest of the YAML untouched.
 ipcMain.handle('config:write-confidence', async (_e, { strict, review, auto }) => {
   try {
     const raw = await fsp.readFile(CONFIG_FILE(), 'utf8');
-    const cfg = yaml.load(raw);
-    if (!cfg.transcription) cfg.transcription = {};
-    cfg.transcription.confidence_threshold = {
-      strict: parseFloat(strict),
-      review: parseFloat(review),
-      auto:   parseFloat(auto)
-    };
-    await fsp.writeFile(CONFIG_FILE(), yaml.dump(cfg, { lineWidth: -1 }), 'utf8');
+    await fsp.writeFile(CONFIG_FILE(), writeYamlThresholds(raw, { strict: parseFloat(strict), review: parseFloat(review), auto: parseFloat(auto) }), 'utf8');
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -406,33 +255,16 @@ ipcMain.handle('config:write-confidence', async (_e, { strict, review, auto }) =
 });
 
 // ---------- IPC: participants ----------
-ipcMain.handle('participants:list', async () => {
-  const db = await loadDB();
-  return db.participants;
-});
+ipcMain.handle('participants:list', async () => (await loadDB()).participants);
 
 ipcMain.handle('participants:create', async (_e, { id, label, notes, age, sex, educationYears, handedness }) => {
-  if (!id || !/^[A-Za-z0-9_\-]+$/.test(id)) {
-    throw new Error('Participant ID must be alphanumeric (letters, digits, _ or -).');
-  }
+  if (!id || !/^[A-Za-z0-9_\-]+$/.test(id)) throw new Error('Participant ID must be alphanumeric (letters, digits, _ or -).');
   const db = await loadDB();
-  if (db.participants.find((p) => p.id === id)) {
-    throw new Error(`Participant "${id}" already exists.`);
-  }
+  if (db.participants.find((p) => p.id === id)) throw new Error(`Participant "${id}" already exists.`);
   const dir = path.join(PARTICIPANTS_D(), id);
   await fsp.mkdir(path.join(dir, 'input'),  { recursive: true });
   await fsp.mkdir(path.join(dir, 'output'), { recursive: true });
-  const p = {
-    id,
-    label: label || id,
-    notes: notes || '',
-    age: age || null,
-    sex: sex || null,
-    educationYears: educationYears || null,
-    handedness: handedness || null,
-    createdAt: new Date().toISOString(),
-    dir
-  };
+  const p = { id, label: label || id, notes: notes || '', age: age || null, sex: sex || null, educationYears: educationYears || null, handedness: handedness || null, createdAt: new Date().toISOString(), dir };
   db.participants.push(p);
   await saveDB(db);
   return p;
@@ -449,96 +281,53 @@ ipcMain.handle('participants:delete', async (_e, id) => {
 ipcMain.handle('sessions:list', async (_e, participantId) => {
   const db = await loadDB();
   const sessions = [...db.sessions];
-
   const AUDIO_EXTS = ['.wav', '.mp3', '.webm', '.ogg', '.flac', '.m4a'];
   const participantsDir = PARTICIPANTS_D();
-
   if (fs.existsSync(participantsDir)) {
-    const pids = participantId
-      ? [participantId]
-      : await fsp.readdir(participantsDir).catch(() => []);
-
+    const pids = participantId ? [participantId] : await fsp.readdir(participantsDir).catch(() => []);
     for (const pid of pids) {
       const inputDir = path.join(participantsDir, pid, 'input');
       if (!fs.existsSync(inputDir)) continue;
-
-      const files = (await fsp.readdir(inputDir).catch(() => [])).filter(f =>
-        AUDIO_EXTS.includes(path.extname(f).toLowerCase())
-      );
-
-      for (const file of files) {
+      for (const file of (await fsp.readdir(inputDir).catch(() => [])).filter(f => AUDIO_EXTS.includes(path.extname(f).toLowerCase()))) {
         const audioPath = path.join(inputDir, file);
-        const alreadyKnown = sessions.some(s => s.audioPath === audioPath);
-        if (!alreadyKnown) {
+        if (!sessions.some(s => s.audioPath === audioPath)) {
           const stat = await fsp.stat(audioPath);
-          sessions.push({
-            id: `imported_${pid}_${file}`,
-            participantId: pid,
-            audioPath,
-            audioFilename: file,
-            recordedAt: stat.mtime.toISOString(),
-            pipelineStatus: 'pending',
-            pipelineRunAt: null,
-            outputDir: path.join(participantsDir, pid, 'output'),
-            imported: true
-          });
+          sessions.push({ id: `imported_${pid}_${file}`, participantId: pid, audioPath, audioFilename: file, recordedAt: stat.mtime.toISOString(), pipelineStatus: 'pending', pipelineRunAt: null, outputDir: path.join(participantsDir, pid, 'output'), imported: true });
         }
       }
     }
   }
-
   return sessions.filter((s) => !participantId || s.participantId === participantId);
 });
 
-// ---------- IPC: save recording ----------
+// ---------- IPC: recording ----------
 ipcMain.handle('recording:save', async (_e, { participantId, buffer, extension }) => {
   if (!participantId) throw new Error('participantId is required');
   const dir = path.join(PARTICIPANTS_D(), participantId, 'input');
   await fsp.mkdir(dir, { recursive: true });
-
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `${participantId}_${ts}.${extension || 'mp3'}`;
   const filepath = path.join(dir, filename);
   await fsp.writeFile(filepath, Buffer.from(buffer));
-
   const db = await loadDB();
-  const session = {
-    id: `${participantId}_${ts}`,
-    participantId,
-    audioPath: filepath,
-    audioFilename: filename,
-    recordedAt: new Date().toISOString(),
-    pipelineStatus: 'pending',
-    pipelineRunAt: null,
-    outputDir: path.join(PARTICIPANTS_D(), participantId, 'output')
-  };
+  const session = { id: `${participantId}_${ts}`, participantId, audioPath: filepath, audioFilename: filename, recordedAt: new Date().toISOString(), pipelineStatus: 'pending', pipelineRunAt: null, outputDir: path.join(PARTICIPANTS_D(), participantId, 'output') };
   db.sessions.push(session);
   await saveDB(db);
   return session;
 });
 
-// ---------- IPC: download reference data ----------
+// ---------- IPC: reference data ----------
 function streamProgress(res, total, onProgress) {
   let received = 0;
-  res.on('data', (chunk) => {
-    received += chunk.length;
-    if (total) onProgress({ received, total, pct: received / total });
-    else onProgress({ received, total: 0, pct: 0 });
-  });
+  res.on('data', (chunk) => { received += chunk.length; onProgress(total ? { received, total, pct: received / total } : { received, total: 0, pct: 0 }); });
 }
-
 function httpsGetFollow(url) {
   return new Promise((resolve, reject) => {
     const go = (u, depth = 0) => {
       if (depth > 5) return reject(new Error('Too many redirects'));
       https.get(u, (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          return go(new URL(res.headers.location, u).toString(), depth + 1);
-        }
-        if (res.statusCode !== 200) {
-          return reject(new Error(`HTTP ${res.statusCode} for ${u}`));
-        }
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) { res.resume(); return go(new URL(res.headers.location, u).toString(), depth + 1); }
+        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode} for ${u}`));
         resolve(res);
       }).on('error', reject);
     };
@@ -550,47 +339,35 @@ ipcMain.handle('reference:download', async (event, { url } = {}) => {
   const targetUrl = url || ZENODO_URL;
   const tmp = path.join(os.tmpdir(), `iss_reference_${Date.now()}.zip`);
   const send = (msg) => mainWin?.webContents.send('reference:progress', msg);
-
   send({ phase: 'connecting', message: `Connecting to ${targetUrl}` });
   const res = await httpsGetFollow(targetUrl);
   const total = parseInt(res.headers['content-length'] || '0', 10);
   send({ phase: 'downloading', total });
-
   streamProgress(res, total, (p) => send({ phase: 'downloading', ...p }));
   await pipeline(res, fs.createWriteStream(tmp));
-
   send({ phase: 'extracting', message: `Extracting to ${REF_DATA_DIR()}` });
-
   await new Promise((resolve, reject) => {
-    const unzipCmd = process.platform === 'win32'
+    const cmd = process.platform === 'win32'
       ? `powershell -Command "Expand-Archive -Force -Path '${tmp}' -DestinationPath '${REF_DATA_DIR()}'"`
-      : `unzip -o "${tmp}" -d "${REF_DATA_DIR()}"` ;
-    exec(unzipCmd, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`Unzip failed: ${stderr || err.message}`));
-      resolve();
-    });
+      : `unzip -o "${tmp}" -d "${REF_DATA_DIR()}"`;
+    exec(cmd, (err, _, stderr) => err ? reject(new Error(`Unzip failed: ${stderr || err.message}`)) : resolve());
   });
-
   await fsp.unlink(tmp).catch(() => {});
   send({ phase: 'done', message: 'Reference data ready.' });
   return { ok: true, path: REF_DATA_DIR() };
 });
 
-// ---------- IPC: docker image pull ----------
+// ---------- IPC: docker ----------
 ipcMain.handle('docker:pull', async () => {
   const send = (line) => mainWin?.webContents.send('docker:pull-log', line);
   return new Promise((resolve, reject) => {
     const proc = spawn('docker', ['pull', DOCKER_IMAGE]);
     proc.stdout.on('data', (d) => send(d.toString()));
     proc.stderr.on('data', (d) => send(d.toString()));
-    proc.on('error', (err) => reject(err));
-    proc.on('close', (code) => {
-      if (code === 0) resolve({ ok: true });
-      else reject(new Error(`docker pull exited with code ${code}`));
-    });
+    proc.on('error', reject);
+    proc.on('close', (code) => code === 0 ? resolve({ ok: true }) : reject(new Error(`docker pull exited with code ${code}`)));
   });
 });
-
 ipcMain.handle('docker:force-pull', async () => {
   const send = (line) => mainWin?.webContents.send('docker:pull-log', line);
   return new Promise((resolve, reject) => {
@@ -598,84 +375,48 @@ ipcMain.handle('docker:force-pull', async () => {
       const proc = spawn('docker', ['pull', '--platform', 'linux/amd64', DOCKER_IMAGE]);
       proc.stdout.on('data', (d) => send(d.toString()));
       proc.stderr.on('data', (d) => send(d.toString()));
-      proc.on('error', (err) => reject(err));
-      proc.on('close', (code) => {
-        if (code === 0) resolve({ ok: true });
-        else reject(new Error(`docker pull exited with code ${code}`));
-      });
+      proc.on('error', reject);
+      proc.on('close', (code) => code === 0 ? resolve({ ok: true }) : reject(new Error(`docker pull exited with code ${code}`)));
     });
   });
 });
 
-// ---------- IPC: detect runnable stages ----------
+// ---------- IPC: pipeline stages detection ----------
 ipcMain.handle('pipeline:detect-stages', async (_e, { sessionId }) => {
   const db = await loadDB();
   let session = db.sessions.find((s) => s.id === sessionId);
-
   if (!session && sessionId.startsWith('imported_')) {
     const AUDIO_EXTS = ['.wav', '.mp3', '.webm', '.ogg', '.flac', '.m4a'];
-    const participantsDir = PARTICIPANTS_D();
-    outer: for (const pid of await fsp.readdir(participantsDir).catch(() => [])) {
-      const inputDir = path.join(participantsDir, pid, 'input');
+    outer: for (const pid of await fsp.readdir(PARTICIPANTS_D()).catch(() => [])) {
+      const inputDir = path.join(PARTICIPANTS_D(), pid, 'input');
       if (!fs.existsSync(inputDir)) continue;
       for (const file of await fsp.readdir(inputDir).catch(() => [])) {
         if (!AUDIO_EXTS.includes(path.extname(file).toLowerCase())) continue;
-        if (`imported_${pid}_${file}` === sessionId) {
-          session = {
-            id: sessionId,
-            participantId: pid,
-            outputDir: path.join(participantsDir, pid, 'output')
-          };
-          break outer;
-        }
+        if (`imported_${pid}_${file}` === sessionId) { session = { id: sessionId, participantId: pid, outputDir: path.join(PARTICIPANTS_D(), pid, 'output') }; break outer; }
       }
     }
   }
-
   if (!session) throw new Error('Session not found.');
-
-  const participantId = session.participantId;
-  const outputDir = path.join(PARTICIPANTS_D(), participantId, 'output');
+  const outputDir = path.join(PARTICIPANTS_D(), session.participantId, 'output');
   const results = [];
-
   for (let i = 0; i < PIPELINE_STAGES.length; i++) {
-    const stage = PIPELINE_STAGES[i];
-    const outputExists = await stageOutputExists(outputDir, stage.outputCheck, participantId);
-    const prevOutputExists = i === 0
-      ? true
-      : await stageOutputExists(outputDir, PIPELINE_STAGES[i - 1].outputCheck, participantId);
-    results.push({ id: stage.id, label: stage.label, outputExists, canRun: prevOutputExists });
+    const s = PIPELINE_STAGES[i];
+    results.push({ id: s.id, label: s.label, outputExists: await stageOutputExists(outputDir, s.outputCheck, session.participantId), canRun: i === 0 ? true : await stageOutputExists(outputDir, PIPELINE_STAGES[i - 1].outputCheck, session.participantId) });
   }
-
   return results;
 });
 
 // ---------- IPC: pipeline run ----------
-// runningContainerId tracks the Docker container name so we can `docker kill` it
-let runningProc        = null;
-let runningContainerId = null;
+let runningProc = null, runningContainerId = null;
 
 function buildDockerBaseArgs(inputDir, outputDir, containerName) {
-  const args = [
-    'run', '--rm',
-    '--name', containerName,
-    '--memory=48g', '-e', 'R_MAX_SIZE=48GB',
-    '-e', 'PWESUITE_PYTHON=/opt/conda/envs/pwesuite_env/bin/python',
-    '-v', `${inputDir}:/input`,
-    '-v', `${outputDir}:/app/output`
-  ];
-
+  const args = ['run', '--rm', '--name', containerName, '--memory=48g', '-e', 'R_MAX_SIZE=48GB', '-e', 'PWESUITE_PYTHON=/opt/conda/envs/pwesuite_env/bin/python', '-v', `${inputDir}:/input`, '-v', `${outputDir}:/app/output`];
   if (fs.existsSync(REF_DATA_DIR()) && fs.readdirSync(REF_DATA_DIR()).length) {
-    const innerDir = path.join(REF_DATA_DIR(), 'reference_data');
-    const mountSrc = fs.existsSync(innerDir) ? innerDir : REF_DATA_DIR();
-    args.push('-v', `${mountSrc}:/app/reference_data`);
+    const inner = path.join(REF_DATA_DIR(), 'reference_data');
+    args.push('-v', `${fs.existsSync(inner) ? inner : REF_DATA_DIR()}:/app/reference_data`);
   }
-
   const cfg = CONFIG_FILE();
-  if (fs.existsSync(cfg)) {
-    args.push('-v', `${cfg}:/app/config/task_template.yaml:ro`);
-  }
-
+  if (fs.existsSync(cfg)) args.push('-v', `${cfg}:/app/config/task_template.yaml:ro`);
   return args;
 }
 
@@ -691,111 +432,71 @@ function runStage(dockerArgs, onLog) {
 
 ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) => {
   if (runningProc) throw new Error('A pipeline run is already in progress.');
-
   const db = await loadDB();
   let session = db.sessions.find((s) => s.id === sessionId);
-
   if (!session && sessionId.startsWith('imported_')) {
     const AUDIO_EXTS = ['.wav', '.mp3', '.webm', '.ogg', '.flac', '.m4a'];
-    const participantsDir = PARTICIPANTS_D();
-    outer: for (const pid of await fsp.readdir(participantsDir).catch(() => [])) {
-      const inputDir = path.join(participantsDir, pid, 'input');
+    outer: for (const pid of await fsp.readdir(PARTICIPANTS_D()).catch(() => [])) {
+      const inputDir = path.join(PARTICIPANTS_D(), pid, 'input');
       if (!fs.existsSync(inputDir)) continue;
       for (const file of await fsp.readdir(inputDir).catch(() => [])) {
         if (!AUDIO_EXTS.includes(path.extname(file).toLowerCase())) continue;
         if (`imported_${pid}_${file}` === sessionId) {
           const audioPath = path.join(inputDir, file);
           const stat = await fsp.stat(audioPath);
-          session = {
-            id: sessionId,
-            participantId: pid,
-            audioPath,
-            audioFilename: file,
-            recordedAt: stat.mtime.toISOString(),
-            pipelineStatus: 'pending',
-            pipelineRunAt: null,
-            outputDir: path.join(participantsDir, pid, 'output'),
-            imported: true
-          };
+          session = { id: sessionId, participantId: pid, audioPath, audioFilename: file, recordedAt: stat.mtime.toISOString(), pipelineStatus: 'pending', pipelineRunAt: null, outputDir: path.join(PARTICIPANTS_D(), pid, 'output'), imported: true };
           break outer;
         }
       }
     }
   }
-
   if (!session) throw new Error('Session not found.');
 
-  const stageSet = stages && stages.length > 0 ? new Set(stages) : null;
-  const stagesToRun = stageSet
-    ? PIPELINE_STAGES.filter((s) => stageSet.has(s.id))
-    : PIPELINE_STAGES;
-
+  const stagesToRun = stages && stages.length > 0 ? PIPELINE_STAGES.filter((s) => stages.includes(s.id)) : PIPELINE_STAGES;
   if (stagesToRun.length === 0) throw new Error('No valid stages selected.');
 
-  const participantId = session.participantId;
+  const { participantId } = session;
   const inputDir  = path.dirname(session.audioPath);
   const outputDir = path.join(PARTICIPANTS_D(), participantId, 'output');
   await fsp.mkdir(outputDir, { recursive: true });
-  for (const sub of ['cropped_audio', 'transcriptions', 'review_files', 'features']) {
-    await fsp.mkdir(path.join(outputDir, sub), { recursive: true });
-  }
+  for (const sub of ['cropped_audio', 'transcriptions', 'review_files', 'features']) await fsp.mkdir(path.join(outputDir, sub), { recursive: true });
 
   const audioInContainer  = `/input/${path.basename(session.audioPath)}`;
   const configInContainer = '/app/config/task_template.yaml';
+  const sendLog   = (line) => mainWin?.webContents.send('pipeline:log',          { sessionId, line });
+  const sendStage = (id, status) => mainWin?.webContents.send('pipeline:stage-update', { sessionId, stageId: id, status });
 
-  const sendLog   = (line) => mainWin?.webContents.send('pipeline:log', { sessionId, line });
-  const sendStage = (stageId, status) =>
-    mainWin?.webContents.send('pipeline:stage-update', { sessionId, stageId, status });
-
-  session.pipelineStatus = 'running';
-  session.pipelineRunAt  = new Date().toISOString();
+  session.pipelineStatus = 'running'; session.pipelineRunAt = new Date().toISOString();
   await saveDB(db);
 
-  let overallOk = true;
-  let lastExitCode = 0;
+  let overallOk = true, lastExitCode = 0;
 
   for (const stage of stagesToRun) {
     const containerName = `iss_${participantId}_${stage.id}_${Date.now()}`;
     runningContainerId = containerName;
-
     sendStage(stage.id, 'running');
     sendLog(`\n--- Stage: ${stage.label} ---\n`);
 
     const baseArgs  = buildDockerBaseArgs(inputDir, outputDir, containerName);
+    const imageArgs = [participantId, audioInContainer, configInContainer, '--stage', stage.stageArg];
 
-    const imageArgs = [
-      participantId,
-      audioInContainer,
-      configInContainer,
-      '--stage', stage.stageArg
-    ];
-
-    // ── Stage 2: whisper model override + full-audio transcription ──────────
     if (stage.id === 'stage2') {
-      if (whisperModel && whisperModel !== 'small') {
-        imageArgs.push('--whisper-model', whisperModel);
-      }
+      if (whisperModel && whisperModel !== 'small') imageArgs.push('--whisper-model', whisperModel);
       imageArgs.push('--full_audio_file', audioInContainer);
-      sendLog('[info] Full-audio transcription enabled — will also produce <id>_full_audio_whisperX.tsv\n');
+      sendLog('[info] Full-audio transcription enabled\n');
     }
 
-    // ── Stage 3: mount entire review_files/ dir and pass --review_dir ───────
-    // run_03_transcription_cleanup.R will scan for all <id>_review_*.tsv files
-    // and compute consensus across all raters automatically.
     if (stage.id === 'stage3') {
       const reviewDirHost = path.join(outputDir, 'review_files');
       const reviewFiles = await listReviewerFiles(reviewDirHost, participantId);
-
       if (reviewFiles.length > 0) {
         const reviewDirInContainer = '/app/review_input';
         baseArgs.push('-v', `${reviewDirHost}:${reviewDirInContainer}:ro`);
         imageArgs.push('--review_dir', reviewDirInContainer);
-        sendLog(`[info] ${reviewFiles.length} reviewer file(s) found — running consensus mode\n`);
-        for (const rf of reviewFiles) {
-          sendLog(`[info]   ${rf.initials} @ ${rf.timestamp}: ${rf.filename}\n`);
-        }
+        sendLog(`[info] ${reviewFiles.length} reviewer file(s) found — consensus mode\n`);
+        for (const rf of reviewFiles) sendLog(`[info]   ${rf.initials} @ ${rf.timestamp}: ${rf.filename}\n`);
       } else {
-        sendLog('[info] No reviewer files found — running automatic cleanup\n');
+        sendLog('[info] No reviewer files — automatic cleanup\n');
       }
     }
 
@@ -803,244 +504,97 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel }) =
     sendLog(`$ docker ${stageArgs.join(' ')}\n`);
 
     let exitCode;
-    try {
-      exitCode = await runStage(stageArgs, sendLog);
-    } catch (err) {
-      sendLog(`\n[error] ${err.message}\n`);
-      sendStage(stage.id, 'error');
-      overallOk = false;
-      lastExitCode = 1;
-      break;
-    }
+    try { exitCode = await runStage(stageArgs, sendLog); }
+    catch (err) { sendLog(`\n[error] ${err.message}\n`); sendStage(stage.id, 'error'); overallOk = false; lastExitCode = 1; break; }
 
     lastExitCode = exitCode;
-
     if (exitCode !== 0) {
       const cancelled = exitCode === 137 || exitCode === 130;
       sendLog(`\n[stage ${cancelled ? 'cancelled' : 'failed'}: exit ${exitCode}]\n`);
       sendStage(stage.id, cancelled ? 'cancelled' : 'error');
-      overallOk = false;
-      break;
+      overallOk = false; break;
     }
-
     sendStage(stage.id, 'completed');
   }
 
   runningContainerId = null;
   sendLog(`\n[pipeline ${overallOk ? 'completed' : 'failed'}: exit ${lastExitCode}]\n`);
 
-  const db2 = await loadDB();
-  const s2 = db2.sessions.find((s) => s.id === sessionId);
-  if (s2) {
-    s2.pipelineStatus   = overallOk ? 'completed' : 'error';
-    s2.pipelineExitCode = lastExitCode;
-    await saveDB(db2);
-  }
-
+  const db2 = await loadDB(); const s2 = db2.sessions.find((s) => s.id === sessionId);
+  if (s2) { s2.pipelineStatus = overallOk ? 'completed' : 'error'; s2.pipelineExitCode = lastExitCode; await saveDB(db2); }
   return { ok: overallOk, exitCode: lastExitCode };
 });
 
-// Cancel: kill the Docker container by name, then the host process
 ipcMain.handle('pipeline:cancel', () => {
-  if (runningContainerId) {
-    exec(`docker kill ${runningContainerId}`, () => {});
-  }
-  if (runningProc) {
-    runningProc.kill('SIGTERM');
-    return true;
-  }
+  if (runningContainerId) exec(`docker kill ${runningContainerId}`, () => {});
+  if (runningProc) { runningProc.kill('SIGTERM'); return true; }
   return false;
 });
-
 ipcMain.handle('pipeline:stages', () => PIPELINE_STAGES);
 
 // =============================================================================
-// IPC: transcription review
+// IPC: review
 // =============================================================================
+ipcMain.handle('review:load-raw',  async (_e, participantId) => loadRawReviewData(participantId));
+ipcMain.handle('review:load',      async (_e, participantId) => loadRawReviewData(participantId));
 
-// ---------------------------------------------------------------------------
-// review:load-raw
-//   Load the auto-cleaned stage-3 TSV as the fresh starting point for a review.
-//   Also returns priorVotes (summary of all existing per-rater files) and the
-//   list of raters who have already submitted a review file.
-// ---------------------------------------------------------------------------
-ipcMain.handle('review:load-raw', async (_e, participantId) => {
-  return loadRawReviewData(participantId);
-});
-
-// Legacy alias — kept so any old renderer code referencing 'review:load' still works.
-ipcMain.handle('review:load', async (_e, participantId) => {
-  return loadRawReviewData(participantId);
-});
-
-// ---------------------------------------------------------------------------
-// review:load-own
-//   Load the latest review file saved by a specific reviewer (identified by
-//   initials).  Falls back to the raw cleaned TSV if no file exists yet for
-//   this reviewer, so the caller always gets a usable starting point.
-// ---------------------------------------------------------------------------
 ipcMain.handle('review:load-own', async (_e, { participantId, initials }) => {
   if (!participantId) throw new Error('participantId is required.');
   if (!initials)      throw new Error('initials are required.');
-
   const clean = initials.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
-
-  // Find all files for this rater and pick the most recent one.
   const allFiles  = await listReviewerFiles(reviewDir, participantId);
   const ownFiles  = allFiles.filter((f) => f.initials.toUpperCase() === clean);
-
-  if (ownFiles.length === 0) {
-    // No prior file — fall back to the raw cleaned TSV so the reviewer has
-    // something to start from.
-    const base = await loadRawReviewData(participantId);
-    return { ...base, resumedFrom: null };
-  }
-
-  // Most recent file is last after sort (ascending timestamp).
+  if (ownFiles.length === 0) return { ...(await loadRawReviewData(participantId)), resumedFrom: null };
   const latest = ownFiles[ownFiles.length - 1];
-  const raw    = await fsp.readFile(latest.filePath, 'utf8');
-  const lines  = raw.split(/\r?\n/).filter(Boolean);
-  const rows   = lines.map((l) => l.split('\t'));
-
-  // Still load priorVotes from ALL raters for the sidebar display.
-  const votesMap   = await buildPriorVotes(allFiles);
-  const priorVotes = {};
-  for (const [key, val] of votesMap.entries()) priorVotes[key] = val;
-  const raters = [...new Set(allFiles.map((r) => r.initials))];
-
-  return {
-    rows,
-    filePath: latest.filePath,
-    priorVotes,
-    raters,
-    resumedFrom: latest.filename,
-    error: null
-  };
+  const rows = (await fsp.readFile(latest.filePath, 'utf8')).split(/\r?\n/).filter(Boolean).map((l) => l.split('\t'));
+  const votesMap = await buildPriorVotes(allFiles);
+  const priorVotes = {}; for (const [k, v] of votesMap.entries()) priorVotes[k] = v;
+  return { rows, filePath: latest.filePath, priorVotes, raters: [...new Set(allFiles.map((r) => r.initials))], resumedFrom: latest.filename, error: null };
 });
 
-// ---------------------------------------------------------------------------
-// review:save
-//   Write a new per-reviewer file. Never overwrites existing files.
-//   Expects { participantId, initials, rows }
-// ---------------------------------------------------------------------------
 ipcMain.handle('review:save', async (_e, { participantId, initials, rows, filePath }) => {
-  // Legacy fallback: if old signature used filePath directly, honour it.
-  if (filePath && !initials) {
-    const tsv = rows.map((r) => r.join('\t')).join('\n');
-    await fsp.writeFile(filePath, tsv, 'utf8');
-    return { ok: true, savedTo: filePath };
-  }
-
+  if (filePath && !initials) { await fsp.writeFile(filePath, rows.map((r) => r.join('\t')).join('\n'), 'utf8'); return { ok: true, savedTo: filePath }; }
   if (!participantId) throw new Error('participantId is required.');
   if (!initials)      throw new Error('initials are required.');
-
   const clean = initials.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
   if (!clean) throw new Error('Initials must contain at least one alphanumeric character.');
-
   const now = new Date();
-  const ts  = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-    'T',
-    String(now.getHours()).padStart(2, '0'),
-    String(now.getMinutes()).padStart(2, '0'),
-  ].join('');
-
+  const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}T${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
   await fsp.mkdir(reviewDir, { recursive: true });
-
   const filename = `${participantId}_review_${clean}_${ts}.tsv`;
-  const dest     = path.join(reviewDir, filename);
-
-  const tsv = rows.map((r) => r.join('\t')).join('\n');
-  await fsp.writeFile(dest, tsv, 'utf8');
+  const dest = path.join(reviewDir, filename);
+  await fsp.writeFile(dest, rows.map((r) => r.join('\t')).join('\n'), 'utf8');
   return { ok: true, savedTo: dest, filename };
 });
 
-// ---------------------------------------------------------------------------
-// review:list-files  (canonical name used by preload.js)
-// review:list-raters (legacy alias — kept for backwards compatibility)
-//   Returns metadata for all per-reviewer files for a participant.
-// ---------------------------------------------------------------------------
-ipcMain.handle('review:list-files', async (_e, participantId) => {
+const _listReviewFiles = async (participantId) => {
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
-  const files = await listReviewerFiles(reviewDir, participantId);
-  return files.map(({ filePath, initials, timestamp, filename }) => ({
-    filePath, initials, timestamp, filename
-  }));
-});
+  return (await listReviewerFiles(reviewDir, participantId)).map(({ filePath, initials, timestamp, filename }) => ({ filePath, initials, timestamp, filename }));
+};
+ipcMain.handle('review:list-files',  async (_e, participantId) => _listReviewFiles(participantId));
+ipcMain.handle('review:list-raters', async (_e, participantId) => _listReviewFiles(participantId));
 
-ipcMain.handle('review:list-raters', async (_e, participantId) => {
-  const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
-  const files = await listReviewerFiles(reviewDir, participantId);
-  return files.map(({ filePath, initials, timestamp, filename }) => ({
-    filePath, initials, timestamp, filename
-  }));
-});
-
-// ---------------------------------------------------------------------------
-// review:get-audio-files
-//   List cropped audio files for a participant (used by the review playlist).
-// ---------------------------------------------------------------------------
 ipcMain.handle('review:get-audio-files', async (_e, participantId) => {
   const AUDIO_EXTS = ['.wav', '.mp3', '.flac', '.ogg', '.m4a'];
-
-  const baseDir  = path.join(PARTICIPANTS_D(), participantId, 'output', 'cropped_audio');
-  const subDir   = path.join(baseDir, participantId);
-
-  let searchDir = fs.existsSync(subDir) ? subDir : (fs.existsSync(baseDir) ? baseDir : null);
+  const baseDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'cropped_audio');
+  const subDir  = path.join(baseDir, participantId);
+  const searchDir = fs.existsSync(subDir) ? subDir : (fs.existsSync(baseDir) ? baseDir : null);
   if (!searchDir) return [];
-
-  let entries;
-  try {
-    entries = await fsp.readdir(searchDir);
-  } catch {
-    return [];
-  }
-
-  const audioFiles = entries
+  return (await fsp.readdir(searchDir).catch(() => []))
     .filter((f) => AUDIO_EXTS.includes(path.extname(f).toLowerCase()))
     .sort()
-    .map((f) => {
-      const fullPath = path.join(searchDir, f);
-      return {
-        stem:    path.basename(f, path.extname(f)),
-        filePath: fullPath,
-        fileUrl:  `file://${fullPath.replace(/\\/g, '/')}`
-      };
-    });
-
-  return audioFiles;
+    .map((f) => { const fullPath = path.join(searchDir, f); return { stem: path.basename(f, path.extname(f)), filePath: fullPath, fileUrl: `file://${fullPath.replace(/\\/g, '/')}` }; });
 });
 
 // ---------- IPC: results ----------
 ipcMain.handle('results:list', async (_e, participantId) => {
   const dir = path.join(PARTICIPANTS_D(), participantId, 'output', 'features');
   if (!fs.existsSync(dir)) return [];
-
   const RESULT_EXTS = ['.csv', '.tsv', '.rds', '.json', '.txt'];
-  const entries = await fsp.readdir(dir);
-
-  const files = await Promise.all(
-    entries
-      .filter((f) => RESULT_EXTS.includes(path.extname(f).toLowerCase()))
-      .map(async (f) => {
-        const full = path.join(dir, f);
-        const stat = await fsp.stat(full);
-        return {
-          name: f,
-          path: full,
-          size: stat.size,
-          mtime: stat.mtime,
-          ext: path.extname(f).toLowerCase(),
-        };
-      })
-  );
-
-  files.sort((a, b) => b.mtime - a.mtime);
-  return files;
+  const files = await Promise.all((await fsp.readdir(dir)).filter((f) => RESULT_EXTS.includes(path.extname(f).toLowerCase())).map(async (f) => { const full = path.join(dir, f); const stat = await fsp.stat(full); return { name: f, path: full, size: stat.size, mtime: stat.mtime, ext: path.extname(f).toLowerCase() }; }));
+  return files.sort((a, b) => b.mtime - a.mtime);
 });
 
 ipcMain.handle('results:read-csv', async (_e, filepath) => {
@@ -1048,28 +602,19 @@ ipcMain.handle('results:read-csv', async (_e, filepath) => {
   const max = 2 * 1024 * 1024;
   const text = raw.length > max ? raw.slice(0, max) : raw;
   const sep = filepath.endsWith('.tsv') ? '\t' : ',';
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  const rows = lines.map((line) => splitDelimited(line, sep));
-  return { rows, truncated: raw.length > max };
+  return { rows: text.split(/\r?\n/).filter(Boolean).map((l) => splitDelimited(l, sep)), truncated: raw.length > max };
 });
 
 function splitDelimited(line, sep = ',') {
   if (sep === '\t') return line.split('\t');
-  const out = [];
-  let cur = '', q = false;
+  const out = []; let cur = '', q = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-    if (ch === '"') {
-      if (q && line[i + 1] === '"') { cur += '"'; i++; }
-      else q = !q;
-    } else if (ch === ',' && !q) {
-      out.push(cur); cur = '';
-    } else {
-      cur += ch;
-    }
+    if (ch === '"') { if (q && line[i+1] === '"') { cur += '"'; i++; } else q = !q; }
+    else if (ch === ',' && !q) { out.push(cur); cur = ''; }
+    else cur += ch;
   }
-  out.push(cur);
-  return out;
+  out.push(cur); return out;
 }
 
 ipcMain.handle('open-external', (_e, url) => shell.openExternal(url));
