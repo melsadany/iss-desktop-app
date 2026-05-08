@@ -77,6 +77,19 @@
     #rev-initials-badge:hover { background: var(--color-primary-hover, #0c4e54); }
     .rev-load-row { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .2rem; }
     .rev-load-row button { flex: 1; min-width: 140px; }
+
+    /* ── Audio auto-advance toggle ────────────────────────────────────────── */
+    .rev-audio-controls {
+      display: flex; align-items: center; gap: .6rem;
+      margin-bottom: .35rem;
+    }
+    .rev-audio-controls h4 { margin: 0; }
+    .autoplay-toggle {
+      display: inline-flex; align-items: center; gap: .3rem;
+      font-size: .8rem; color: var(--color-text-muted, #666);
+      cursor: pointer; user-select: none;
+    }
+    .autoplay-toggle input { cursor: pointer; }
   </style>
 </head>
 <body>
@@ -398,7 +411,13 @@
 
             <!-- Audio player -->
             <div id="rev-audio-wrap" hidden>
-              <h4>Audio</h4>
+              <div class="rev-audio-controls">
+                <h4>Audio</h4>
+                <label class="autoplay-toggle" title="When on, the next clip plays automatically after each one ends">
+                  <input type="checkbox" id="rev-autoplay" checked />
+                  auto-advance
+                </label>
+              </div>
               <p id="rev-clip-label" class="muted rev-clip-label"></p>
               <audio id="rev-audio" controls preload="metadata"
                      style="width:100%; margin-bottom: 0.5rem;"></audio>
