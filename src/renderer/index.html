@@ -13,8 +13,85 @@
       } catch (e) {}
     })();
   </script>
+  <style>
+    /* ── Initials modal ───────────────────────────────────────────────────── */
+    #initials-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.55);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999;
+    }
+    #initials-overlay.hidden { display: none; }
+    .initials-dialog {
+      background: var(--color-surface, #fff);
+      border: 1px solid var(--color-border, #ccc);
+      border-radius: 10px;
+      padding: 2rem 2.5rem;
+      width: 340px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.22);
+      display: flex; flex-direction: column; gap: .9rem;
+    }
+    .initials-dialog h2 { margin: 0; font-size: 1.15rem; }
+    .initials-dialog p  { margin: 0; font-size: .88rem; color: var(--color-text-muted, #666); }
+    #initials-input {
+      font-size: 1.6rem; letter-spacing: .25rem; text-transform: uppercase;
+      text-align: center; padding: .4rem .6rem;
+      border: 2px solid var(--color-primary, #01696f);
+      border-radius: 6px; width: 100%; box-sizing: border-box;
+    }
+    #initials-confirm {
+      padding: .55rem 1.2rem; font-size: .95rem;
+      background: var(--color-primary, #01696f); color: #fff;
+      border: none; border-radius: 6px; cursor: pointer;
+    }
+    #initials-confirm:hover { background: var(--color-primary-hover, #0c4e54); }
+    #initials-error { color: var(--color-error, #a12c7b); font-size: .84rem; min-height: 1.1em; }
+
+    /* ── Reviewer status panel ────────────────────────────────────────────── */
+    #rev-status-panel {
+      border: 1px solid var(--color-border, #d4d1ca);
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      background: var(--color-surface-offset, #f3f0ec);
+      margin-top: .5rem;
+    }
+    #rev-status-panel h4 { margin: 0 0 .4rem; font-size: .85rem; opacity: .75; text-transform: uppercase; letter-spacing: .05em; }
+    .rev-rater-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: .4rem; }
+    .rev-rater-chip {
+      display: inline-flex; align-items: center; gap: .3rem;
+      padding: .2rem .55rem; border-radius: 99px; font-size: .8rem; font-weight: 600;
+      background: var(--color-primary-highlight, #cedcd8);
+      color: var(--color-primary-active, #0f3638);
+    }
+    .rev-rater-chip .chip-time { font-weight: 400; opacity: .7; font-size: .75rem; }
+    #rev-status-panel .no-raters { font-size: .85rem; color: var(--color-text-muted, #666); }
+
+    /* ── Current reviewer badge ───────────────────────────────────────────── */
+    #rev-initials-badge {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .22rem .7rem; border-radius: 99px; font-size: .82rem; font-weight: 700;
+      background: var(--color-primary, #01696f); color: #fff;
+      letter-spacing: .04em;
+      cursor: pointer;
+    }
+    #rev-initials-badge:hover { background: var(--color-primary-hover, #0c4e54); }
+    .rev-load-row { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .2rem; }
+    .rev-load-row button { flex: 1; min-width: 140px; }
+  </style>
 </head>
 <body>
+
+  <!-- ── Initials modal (shown when entering Review tab without initials) ── -->
+  <div id="initials-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="initials-title">
+    <div class="initials-dialog">
+      <h2 id="initials-title">Reviewer initials</h2>
+      <p>Enter your 2–4 letter initials. These will be used to tag your review file so multiple reviewers can work independently.</p>
+      <input id="initials-input" maxlength="4" placeholder="e.g. MES" autocomplete="off" spellcheck="false" />
+      <span id="initials-error"></span>
+      <button id="initials-confirm">Continue</button>
+    </div>
+  </div>
+
   <div id="app">
     <aside class="sidebar">
       <div class="brand">
@@ -32,7 +109,8 @@
         <button class="nav-item" data-view="record">Record</button>
         <button class="nav-item" data-view="run">Run pipeline</button>
         <button class="nav-item" data-view="review">Review</button>
-        <button class="nav-item" data-view="results">Results</button>         <button class="nav-item" data-view="docs">Documentation</button>
+        <button class="nav-item" data-view="results">Results</button>
+        <button class="nav-item" data-view="docs">Documentation</button>
       </nav>
       <div class="sidebar-foot">
         <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
@@ -243,7 +321,7 @@
                     Words whose transcription confidence falls below this value are flagged for
                     review. <strong>Lower values (closer to 0)</strong> keep more words, including
                     uncertain ones. <strong>Higher values (closer to 1)</strong> discard low-confidence
-                    words before cleanup — useful when audio quality is poor. Default is
+                    words before cleanup &mdash; useful when audio quality is poor. Default is
                     <code>0.0</code> (keep all words).
                   </p>
                   <span class="conf-saved" id="conf-saved" aria-live="polite"></span>
@@ -274,23 +352,52 @@
       <!-- REVIEW -->
       <section id="view-review" class="view">
         <h1>Transcription review</h1>
-        <p class="lead">Review and edit the cleaned transcription produced by stage&nbsp;3 before running feature extraction.</p>
+        <p class="lead">Review and edit the auto-cleaned transcription. Each reviewer saves a separate file; stage&nbsp;3 computes consensus when re-run.</p>
         <div class="row">
           <div class="card">
-            <h3>Participant</h3>
-            <label>Participant
+
+            <!-- Reviewer identity row -->
+            <div style="display:flex; align-items:center; gap:.6rem; margin-bottom:.6rem;">
+              <h3 style="margin:0;">Reviewer</h3>
+              <button id="rev-initials-badge" title="Click to change initials" aria-label="Current reviewer initials — click to change">
+                &mdash;
+              </button>
+            </div>
+
+            <label style="margin-bottom:.35rem;">Participant
               <select id="rev-participant"></select>
             </label>
-            <div class="actions">
-              <button id="rev-load" class="primary">Load transcription</button>
-              <button id="rev-save" disabled>Save changes</button>
+
+            <!-- Dual load buttons -->
+            <div class="rev-load-row">
+              <button id="rev-load-raw" class="primary" title="Load the auto-cleaned transcription (stage 3 output) as a fresh starting point">
+                Load transcription
+              </button>
+              <button id="rev-load-own" title="Resume your previous review file for this participant">
+                Resume my review
+              </button>
+            </div>
+
+            <!-- Save -->
+            <div class="actions" style="margin-top:.5rem;">
+              <button id="rev-save" disabled>Save review</button>
             </div>
             <p id="rev-status" class="muted"></p>
-            <p class="hint">Click any cell to edit the <em>response</em> column.
-               Use the <em>drop</em> and <em>comment</em> checkboxes to flag rows.
-               Changes are written back to the <code>review_files/</code> TSV.
-               Re-run stage&nbsp;4 after saving to update features.</p>
 
+            <p class="hint">Click any cell to edit the <em>response</em> column.
+               Use the <em>drop</em> checkbox to flag rows for removal and <em>comment</em> to annotate.
+               Your edits are saved to <code>review_files/&lt;id&gt;_review_&lt;INITIALS&gt;_&lt;TIMESTAMP&gt;.tsv</code>.
+               Re-run stage&nbsp;3 afterwards to apply consensus, then stage&nbsp;4 to update features.</p>
+
+            <!-- Reviewer status panel -->
+            <div id="rev-status-panel">
+              <h4>Existing reviews</h4>
+              <ul class="rev-rater-list" id="rev-rater-list">
+                <li class="no-raters">No review files yet for this participant.</li>
+              </ul>
+            </div>
+
+            <!-- Audio player -->
             <div id="rev-audio-wrap" hidden>
               <h4>Audio</h4>
               <p id="rev-clip-label" class="muted rev-clip-label"></p>

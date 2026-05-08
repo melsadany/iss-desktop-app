@@ -32,8 +32,16 @@ contextBridge.exposeInMainWorld('iss', {
   writeConfidence:     (data)         => ipcRenderer.invoke('config:write-confidence', data),
 
   // transcription review
-  loadReview:      (participantId)    => ipcRenderer.invoke('review:load', participantId),
+  //   loadRawReview   — load the auto-cleaned stage-3 TSV as a fresh review base
+  //   loadOwnReview   — load the reviewer's own latest file (resume previous session)
+  //   saveReview      — save with per-rater timestamped filename
+  //   listReviewFiles — list all per-rater TSV files with metadata
+  //   listRaters      — legacy alias kept for results/display use
+  //   getAudioFiles   — list audio files for the participant's input folder
+  loadRawReview:   (participantId)    => ipcRenderer.invoke('review:load-raw', participantId),
+  loadOwnReview:   (participantId, initials) => ipcRenderer.invoke('review:load-own', { participantId, initials }),
   saveReview:      (data)             => ipcRenderer.invoke('review:save', data),
+  listReviewFiles: (participantId)    => ipcRenderer.invoke('review:list-files', participantId),
   listRaters:      (participantId)    => ipcRenderer.invoke('review:list-raters', participantId),
   getAudioFiles:   (participantId)    => ipcRenderer.invoke('review:get-audio-files', participantId),
 
