@@ -168,7 +168,9 @@ async function loadRawReviewData(participantId) {
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
   let tsvPath = null;
   const fixed = path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`);
+  const consensus = path.join(reviewDir, `${participantId}_consensus_latest.tsv`);
   if (fs.existsSync(fixed)) { tsvPath = fixed; }
+  if (!tsvPath && fs.existsSync(consensus)) { tsvPath = consensus; }
   if (!tsvPath) {
     try {
       const match = (await fsp.readdir(reviewDir)).find(
@@ -180,6 +182,12 @@ async function loadRawReviewData(participantId) {
   if (!tsvPath) return { rows: null, filePath: null, priorVotes: null, raters: [], error: 'No cleaned transcription file found. Run stage 3 first.' };
 
   const rows = (await fsp.readFile(tsvPath, 'utf8')).split(/\r?\n/).filter(Boolean).map((l) => l.split('\t'));
+  const header = rows[0] || [];
+  if (!header.includes('drop')) header.push('drop');
+  if (!header.includes('comment')) header.push('comment');
+  for (let i = 1; i < rows.length; i++) {
+    while (rows[i].length < header.length) rows[i].push('');
+  }
   const reviewerFiles = await listReviewerFiles(reviewDir, participantId);
   const votesMap = await buildPriorVotes(reviewerFiles);
   const priorVotes = {};
