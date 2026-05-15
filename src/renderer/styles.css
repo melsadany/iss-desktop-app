@@ -587,3 +587,128 @@ code {
 }
 .whisper-model-label select { width: auto; }
 .hint.warn { color: var(--bad); }
+
+/* ---------- stage 3 reviewer panel ---------- */
+
+/* Outer panel — shown/hidden via JS .visible class */
+#stage3-reviewer-panel {
+  display: none;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+#stage3-reviewer-panel.visible {
+  display: block;
+}
+
+/* Section heading inside the panel */
+#stage3-reviewer-panel .s3-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+}
+
+/* Each radio-button row (No reviewers / All / Select) */
+.s3-mode-label {
+  display: flex !important;   /* override global label { display:block } */
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px !important; /* override global label margin */
+  padding: 0;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.3;
+}
+.s3-mode-label:last-of-type {
+  margin-bottom: 0 !important;
+}
+
+/* Radio inputs — override global input { width:100% } */
+.s3-mode-label input[type="radio"] {
+  width: auto !important;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+/* Muted hint text inside a mode label */
+.s3-mode-label .s3-mode-hint {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* Scrollable list of reviewer checkboxes */
+#stage3-reviewer-list {
+  display: none;
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 130px;
+  overflow-y: auto;
+}
+#stage3-reviewer-list.visible {
+  display: block;
+}
+
+/* Empty/loading message inside the reviewer list */
+#stage3-reviewer-list-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0;
+  padding: 2px 0;
+}
+
+/* Each reviewer checkbox row — injected by JS */
+.s3-rater-label {
+  display: flex !important;   /* override global label { display:block } */
+  align-items: center;
+  gap: 8px;
+  margin: 0 !important;       /* override global label margin */
+  padding: 4px 2px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  border-radius: 4px;
+  transition: background .1s ease;
+}
+.s3-rater-label:hover {
+  background: var(--panel-2);
+}
+
+/* Checkbox inside each reviewer row */
+.s3-rater-label input[type="checkbox"] {
+  width: auto !important;    /* override global input { width:100% } */
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+/* Initials text — fills available space so timestamp is pushed right */
+.s3-rater-label .s3-rater-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+/* Timestamp badge on the right */
+.s3-rater-timestamp {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
