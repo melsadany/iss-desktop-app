@@ -886,6 +886,23 @@ function bindReview() {
       }
     }).catch(() => {});
   }
+
+  // ── Audio auto-advance ────────────────────────────────────────────
+  // Wire the 'ended' event on the shared review audio element once at
+  // bind time. When a clip finishes and auto-advance is checked, play
+  // the next clip in the playlist. If the last clip just finished,
+  // do nothing (stay at the end).
+  const revAudio = $('#rev-audio');
+  if (revAudio) {
+    revAudio.addEventListener('ended', () => {
+      const autoplay = $('#rev-autoplay');
+      if (!autoplay || !autoplay.checked) return;
+      const next = state.reviewPlaylistIdx + 1;
+      if (next < state.reviewPlaylist.length) {
+        playClip(next);
+      }
+    });
+  }
 }
 
 function updateInitialsBadge(initials) {
