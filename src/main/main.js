@@ -168,9 +168,17 @@ async function loadRawReviewData(participantId) {
   const reviewDir = path.join(PARTICIPANTS_D(), participantId, 'output', 'review_files');
   let tsvPath = null;
   const fixed = path.join(reviewDir, `${participantId}_cleaned_transcription.tsv`);
-  const consensus = path.join(reviewDir, `${participantId}_consensus_latest.tsv`);
+  // Dynamically find the latest timestamped consensus TSV (e.g. SUB001_consensus_20260515T0932.tsv)
+  const consensusFiles = fs.existsSync(reviewDir)
+    ? fs.readdirSync(reviewDir)
+        .filter(f => f.startsWith(`${participantId}_consensus_`) && f.endsWith('.tsv'))
+        .sort()
+    : [];
+  const latestConsensus = consensusFiles.length
+    ? path.join(reviewDir, consensusFiles[consensusFiles.length - 1])
+    : null;
   if (fs.existsSync(fixed)) { tsvPath = fixed; }
-  if (!tsvPath && fs.existsSync(consensus)) { tsvPath = consensus; }
+  if (!tsvPath && latestConsensus) { tsvPath = latestConsensus; }
   if (!tsvPath) {
     try {
       const match = (await fsp.readdir(reviewDir)).find(
