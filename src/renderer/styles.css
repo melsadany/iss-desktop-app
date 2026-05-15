@@ -408,6 +408,13 @@ progress::-moz-progress-bar      { background: var(--primary); }
   width: 54px;
 }
 
+/* Currently playing row — highlighted during audio playback */
+#rev-table tbody tr.playing {
+  background: rgba(71,130,180,.15) !important;
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
 /* Save button pulses when there are unsaved edits */
 @keyframes unsaved-pulse {
   0%, 100% { border-color: var(--accent); }

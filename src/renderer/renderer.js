@@ -554,7 +554,7 @@ async function updateStage3ReviewerPanel() {
       lbl.className = 's3-rater-label';
       lbl.innerHTML = `
         <input type="checkbox" class="s3-rater-cb" data-initials="${escapeHtml(initials)}" checked />
-        <span>${escapeHtml(initials)}</span>
+        <span class="s3-rater-name">${escapeHtml(initials)}</span>
         <span class="s3-rater-timestamp">${byRater[initials].timestamp.slice(0, 8)}</span>`;
       listDiv.appendChild(lbl);
     }
@@ -887,14 +887,15 @@ function bindReview() {
     }).catch(() => {});
   }
 
-  // ── Audio auto-advance ────────────────────────────────────────────
-  // Wire the 'ended' event on the shared review audio element once at
-  // bind time. When a clip finishes and auto-advance is checked, play
-  // the next clip in the playlist. If the last clip just finished,
-  // do nothing (stay at the end).
+  // ── Audio auto-advance + row highlight clear ──────────────────────
+  // When a clip finishes: clear the playing row highlight, then advance
+  // to the next clip if auto-advance is enabled.
   const revAudio = $('#rev-audio');
   if (revAudio) {
     revAudio.addEventListener('ended', () => {
+      // Clear the playing row highlight
+      $$('#rev-table tbody tr').forEach((tr) => tr.classList.remove('playing'));
+
       const autoplay = $('#rev-autoplay');
       if (!autoplay || !autoplay.checked) return;
       const next = state.reviewPlaylistIdx + 1;
@@ -1117,8 +1118,31 @@ function playClip(idx) {
   audio.src = f.fileUrl;
   label.textContent = f.stem;
   audio.play().catch(() => {});
-  // Highlight active button
+
+  // Highlight active playlist button
   $$('.rev-clip-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+
+  // ── Highlight the matching review table row ──────────────────────
+  $$('#rev-table tbody tr').forEach((tr) => tr.classList.remove('playing'));
+  const tbody = $('#rev-table tbody');
+  if (tbody && state.revCols) {
+    const afCol = state.revCols['audio_file'];
+    if (afCol !== undefined) {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      for (const tr of rows) {
+        const ri = parseInt(tr.dataset.rowIdx, 10);
+        if (!state.reviewRows[ri]) continue;
+        const cellStem = (state.reviewRows[ri][afCol] || '')
+          .replace(/\.[^.]+$/, '').split('/').pop().split('\\').pop();
+        if (cellStem === f.stem || cellStem.includes(f.stem) || f.stem.includes(cellStem)) {
+          tr.classList.add('playing');
+          tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          break;
+        }
+      }
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────
 }
 
 function playReviewRowAudio(row, header) {
