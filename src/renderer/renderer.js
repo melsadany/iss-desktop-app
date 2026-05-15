@@ -84,6 +84,8 @@ let state = {
   reviewPlaylist: [],
   reviewPlaylistIdx: -1,
   revCols: null,
+  // AbortController for the active timeupdate highlight listener
+  _highlightAbort: null,
 };
 
 const REV_VISIBLE_COLS = ['task', 'prompt', 'trial', 'response', 'confidence', 'drop', 'comment', 'prior_votes'];
@@ -361,7 +363,7 @@ async function startTask() {
 
     const buffer  = await finalBlob.arrayBuffer();
     const session = await window.iss.saveRecording({ participantId: pid, buffer, extension });
-    $('#rec-status').textContent = `Saved ${session.audioFilename}. Switch to "Run pipeline" to analyze.`;
+    $('#rec-status').textContent = `Saved ${session.audioFilename}. Switch to \u201cRun pipeline\u201d to analyze.`;
     $('#rec-stop').disabled  = true;
     $('#rec-start').disabled = false;
   };
@@ -887,13 +889,12 @@ function bindReview() {
     }).catch(() => {});
   }
 
-  // ── Audio auto-advance + row highlight clear ──────────────────────
-  // When a clip finishes: clear the playing row highlight, then advance
-  // to the next clip if auto-advance is enabled.
+  // ── Audio auto-advance + row highlight clear ────────────────────
   const revAudio = $('#rev-audio');
   if (revAudio) {
     revAudio.addEventListener('ended', () => {
-      // Clear the playing row highlight
+      // Cancel the timeupdate highlight loop
+      cancelHighlightLoop();
       $$('#rev-table tbody tr').forEach((tr) => tr.classList.remove('playing'));
 
       const autoplay = $('#rev-autoplay');
@@ -903,7 +904,69 @@ function bindReview() {
         playClip(next);
       }
     });
+
+    revAudio.addEventListener('pause', () => {
+      // Keep highlight frozen on last row when paused — don’t cancel.
+    });
   }
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────────
+  // Guards so shortcuts don’t fire while the user is typing in any input,
+  // textarea, select, or contentEditable cell.
+  document.addEventListener('keydown', (e) => {
+    // Only active when the Review view is visible
+    if (!$('#view-review.active')) return;
+
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    const editable = document.activeElement?.isContentEditable;
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || editable) return;
+
+    // Guard: don’t intercept modifier-key combos (Cmd+S, Ctrl+R, etc.)
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    const audio = $('#rev-audio');
+    if (!audio) return;
+
+    switch (e.key) {
+      case ' ':                         // Space — play / pause
+        e.preventDefault();
+        if (audio.paused) audio.play().catch(() => {});
+        else              audio.pause();
+        break;
+
+      case 'ArrowLeft':                 // ← — seek −5 s
+        e.preventDefault();
+        audio.currentTime = Math.max(0, audio.currentTime - 5);
+        break;
+
+      case 'ArrowRight':                // → — seek +5 s
+        e.preventDefault();
+        audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 5);
+        break;
+
+      case 'p': case 'P': {             // p — previous clip
+        e.preventDefault();
+        const prev = state.reviewPlaylistIdx - 1;
+        if (prev >= 0) playClip(prev);
+        break;
+      }
+
+      case 'n': case 'N': {             // n — next clip
+        e.preventDefault();
+        const next = state.reviewPlaylistIdx + 1;
+        if (next < state.reviewPlaylist.length) playClip(next);
+        break;
+      }
+
+      case 'Escape':                    // Escape — stop (pause + reset)
+        e.preventDefault();
+        audio.pause();
+        audio.currentTime = 0;
+        cancelHighlightLoop();
+        $$('#rev-table tbody tr').forEach((tr) => tr.classList.remove('playing'));
+        break;
+    }
+  });
 }
 
 function updateInitialsBadge(initials) {
@@ -1107,6 +1170,122 @@ function renderPlaylist() {
     btn.addEventListener('click', () => playClip(i));
     container.appendChild(btn);
   });
+
+  // Inject keyboard shortcut hint below the playlist (once)
+  let hint = $('#rev-kbd-hint');
+  if (!hint) {
+    hint = document.createElement('p');
+    hint.id        = 'rev-kbd-hint';
+    hint.className = 'hint';
+    hint.style.cssText = 'margin-top:.35rem; font-size:.76rem; color:var(--color-text-muted,#666);';
+    hint.innerHTML =
+      '<kbd>Space</kbd> play/pause &nbsp;·&nbsp; '
+      + '<kbd>&#8592;</kbd><kbd>&#8594;</kbd> seek ±5&nbsp;s &nbsp;·&nbsp; '
+      + '<kbd>p</kbd>&nbsp;/&nbsp;<kbd>n</kbd> prev/next clip &nbsp;·&nbsp; '
+      + '<kbd>Esc</kbd> stop';
+    container.insertAdjacentElement('afterend', hint);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// cancelHighlightLoop — abort any active timeupdate highlight listener
+// ---------------------------------------------------------------------------
+function cancelHighlightLoop() {
+  if (state._highlightAbort) {
+    state._highlightAbort.abort();
+    state._highlightAbort = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// buildClipRowIndex — pre-index the table rows that belong to a given clip
+// stem, storing their parsed start/end times for O(1) lookup during timeupdate.
+//
+// Returns an array of { tr, start, end } objects, sorted by start.
+// ---------------------------------------------------------------------------
+function buildClipRowIndex(stem) {
+  if (!state.revCols || !state.reviewRows) return [];
+
+  const afCol = state.revCols['audio_file'];
+  const stCol = state.revCols['start'];
+  const enCol = state.revCols['end'];
+  if (afCol === undefined) return [];
+
+  const tbody = $('#rev-table tbody');
+  if (!tbody) return [];
+
+  const index = [];
+  for (const tr of tbody.querySelectorAll('tr')) {
+    const ri  = parseInt(tr.dataset.rowIdx, 10);
+    const row = state.reviewRows[ri];
+    if (!row) continue;
+
+    const cellStem = (row[afCol] || '')
+      .replace(/\.[^.]+$/, '').split('/').pop().split('\\').pop();
+
+    if (cellStem !== stem && !cellStem.includes(stem) && !stem.includes(cellStem)) continue;
+
+    const start = stCol !== undefined ? parseFloat(row[stCol]) : NaN;
+    const end   = enCol !== undefined ? parseFloat(row[enCol]) : NaN;
+    index.push({ tr, start, end });
+  }
+
+  // Sort by start time so we can do a simple linear scan
+  index.sort((a, b) => (isNaN(a.start) ? 1 : isNaN(b.start) ? -1 : a.start - b.start));
+  return index;
+}
+
+// ---------------------------------------------------------------------------
+// startHighlightLoop — attach a timeupdate listener that highlights the row
+// whose start/end window contains the current playback position.
+//
+// The listener is registered with an AbortSignal so it is cleaned up
+// automatically whenever cancelHighlightLoop() is called (clip change,
+// ended event, Escape key).
+// ---------------------------------------------------------------------------
+function startHighlightLoop(audio, rowIndex) {
+  cancelHighlightLoop(); // ensure no stale listener remains
+
+  if (!rowIndex.length) return;
+
+  const ac = new AbortController();
+  state._highlightAbort = ac;
+
+  let lastTr = null;
+
+  audio.addEventListener('timeupdate', () => {
+    const t = audio.currentTime;
+
+    // Find the best-matching row:
+    // 1. Prefer a row whose [start, end) window contains t.
+    // 2. Fall back to the last row whose start <= t (handles rows with no end).
+    let best = null;
+    for (const entry of rowIndex) {
+      if (isNaN(entry.start)) continue;
+      if (entry.start <= t) {
+        if (isNaN(entry.end) || t < entry.end) {
+          best = entry; // exact window match — keep looking for a later one
+        } else {
+          best = entry; // past this row’s end but still the latest start ≤ t
+        }
+      }
+    }
+    // Prefer strict window match over fallback
+    let strict = null;
+    for (const entry of rowIndex) {
+      if (!isNaN(entry.start) && !isNaN(entry.end)) {
+        if (entry.start <= t && t < entry.end) { strict = entry; break; }
+      }
+    }
+    const chosen = strict || best;
+
+    if (chosen && chosen.tr !== lastTr) {
+      if (lastTr) lastTr.classList.remove('playing');
+      chosen.tr.classList.add('playing');
+      chosen.tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      lastTr = chosen.tr;
+    }
+  }, { signal: ac.signal });
 }
 
 function playClip(idx) {
@@ -1115,6 +1294,11 @@ function playClip(idx) {
   state.reviewPlaylistIdx = idx;
   const audio = $('#rev-audio');
   const label = $('#rev-clip-label');
+
+  // Cancel any previous highlight loop before switching source
+  cancelHighlightLoop();
+  $$('#rev-table tbody tr').forEach((tr) => tr.classList.remove('playing'));
+
   audio.src = f.fileUrl;
   label.textContent = f.stem;
   audio.play().catch(() => {});
@@ -1122,27 +1306,9 @@ function playClip(idx) {
   // Highlight active playlist button
   $$('.rev-clip-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
 
-  // ── Highlight the matching review table row ──────────────────────
-  $$('#rev-table tbody tr').forEach((tr) => tr.classList.remove('playing'));
-  const tbody = $('#rev-table tbody');
-  if (tbody && state.revCols) {
-    const afCol = state.revCols['audio_file'];
-    if (afCol !== undefined) {
-      const rows = Array.from(tbody.querySelectorAll('tr'));
-      for (const tr of rows) {
-        const ri = parseInt(tr.dataset.rowIdx, 10);
-        if (!state.reviewRows[ri]) continue;
-        const cellStem = (state.reviewRows[ri][afCol] || '')
-          .replace(/\.[^.]+$/, '').split('/').pop().split('\\').pop();
-        if (cellStem === f.stem || cellStem.includes(f.stem) || f.stem.includes(cellStem)) {
-          tr.classList.add('playing');
-          tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          break;
-        }
-      }
-    }
-  }
-  // ─────────────────────────────────────────────────────────────────
+  // Build the row index for this clip and start the live highlight loop
+  const rowIndex = buildClipRowIndex(f.stem);
+  startHighlightLoop(audio, rowIndex);
 }
 
 function playReviewRowAudio(row, header) {
