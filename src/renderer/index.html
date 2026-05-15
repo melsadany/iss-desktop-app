@@ -74,11 +74,21 @@
       opacity: .75;
     }
     .stage3-radio-label {
-      display: flex;
-      align-items: center;
+      display: grid;
+      grid-template-columns: 1rem 1fr;
+      align-items: baseline;
       gap: .45rem;
       font-size: .88rem;
       cursor: pointer;
+      line-height: 1.4;
+    }
+    .stage3-radio-label input[type="radio"] {
+      margin: 0;
+      flex-shrink: 0;
+      cursor: pointer;
+      /* nudge radio to align with the first line of text */
+      position: relative;
+      top: 0.1em;
     }
     .stage3-mode-hint {
       color: var(--color-text-muted, #666);
