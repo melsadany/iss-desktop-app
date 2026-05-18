@@ -352,7 +352,7 @@ ipcMain.handle('reference:download', async (event, { url } = {}) => {
   await new Promise((resolve, reject) => {
     const cmd = process.platform === 'win32'
       ? `powershell -Command "Expand-Archive -Force -Path '${tmp}' -DestinationPath '${REF_DATA_DIR()}'"`
-      : `unzip -o "${tmp}" -d "${REF_DATA_DIR()}"`;
+      : `unzip -o "${tmp}" -d "${REF_DATA_DIR()}"` ;
     exec(cmd, (err, _, stderr) => err ? reject(new Error(`Unzip failed: ${stderr || err.message}`)) : resolve());
   });
   await fsp.unlink(tmp).catch(() => {});
@@ -442,7 +442,7 @@ function runStage(dockerArgs, onLog) {
   });
 }
 
-// Resolve a session record, including imported sessions that aren’t in the DB.
+// Resolve a session record, including imported sessions that aren't in the DB.
 async function resolveSession(sessionId) {
   const db = await loadDB();
   let session = db.sessions.find((s) => s.id === sessionId);
@@ -518,8 +518,10 @@ ipcMain.handle('pipeline:run', async (_e, { sessionId, stages, whisperModel, sta
       const reviewDirHost = path.join(outputDir, 'review_files');
 
       if (stage3Mode === 'none' || (Array.isArray(stage3Reviewers) && stage3Reviewers.length === 0)) {
-        // No reviewers — automatic cleanup only; do not pass --review_dir
+        // No reviewers — pass --no-review so pipeline.sh skips the
+        // auto-detect block entirely and never picks up stale review_files/.
         sendLog('[info] Stage 3: no-reviewer mode — automatic cleanup from stage 2 output\n');
+        imageArgs.push('--no-review');
       } else {
         // Gather all reviewer files, then filter if 'select' mode
         let reviewFiles = await listReviewerFiles(reviewDirHost, participantId);
